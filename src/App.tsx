@@ -1,18 +1,31 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { GraphView } from "./components/GraphView";
 import { CanvasView } from "./components/CanvasView";
-import { analyzeProject } from "./lib/analyzer";
+import { SourceView } from "./components/SourceView";
 import { computeAnalytics, explainNode, neighborhood, shortestPath } from "./lib/analytics";
 import { sceneBounds, selectionToElements, type BoardElement } from "./lib/canvas";
 import { DEMO_FILES } from "./lib/demo";
-import { pickProjectFromDirectory, readProjectFromInput, supportsDirectoryPicker } from "./lib/loadFiles";
+import { pickProjectFromDirectory, readProjectFromInput, supportsDirectoryPicker, type ProjectScan } from "./lib/loadFiles";
+import { MAX_FILES, MAX_FILE_BYTES } from "./lib/scan";
 import type { KnowledgeGraph, NodeKind, SourceFileInput } from "./lib/types";
 import "./App.css";
 
 const ALL_KINDS: NodeKind[] = ["file", "function", "class", "note"];
+const NO_FILES = "No supported files found. sourcebeta reads JS/TS, Python, Java, Rust, Go, C/C++, and Markdown files.";
+const PATH_FILTER_THRESHOLD = 500;
+const PATH_OPTION_LIMIT = 40;
+const EMPTY_GRAPH: KnowledgeGraph = { nodes: [], edges: [] };
+const PROJECT_QUERY = new URLSearchParams(window.location.search).has("project");
+
+function scanNotice(scan: ProjectScan): string {
+  const notes: string[] = [];
+  if (scan.truncated) notes.push(`Scan stopped at ${MAX_FILES.toLocaleString()} files; additional supported files were omitted.`);
+  if (scan.skippedLarge > 0) notes.push(`Skipped ${scan.skippedLarge} file${scan.skippedLarge === 1 ? "" : "s"} larger than ${MAX_FILE_BYTES / 1_000_000} MB.`);
+  return notes.join(" ");
+}
 
 export default function App() {
-  const [files, setFiles] = useState<SourceFileInput[]>(DEMO_FILES);
+  const [analyzedGraph, setAnalyzedGraph] = useState<KnowledgeGraph | null>(null);
   const [view, setView] = useState<"graph" | "canvas">("graph");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -22,16 +35,19 @@ export default function App() {
   const [localOnly, setLocalOnly] = useState(false);
   const [depth, setDepth] = useState(1);
   const [pathTarget, setPathTarget] = useState("");
+  const [pathQuery, setPathQuery] = useState("");
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [busy, setBusy] = useState(PROJECT_QUERY ? "Loading project graph…" : "Loading demo graph…");
   const [projectGraph, setProjectGraph] = useState<KnowledgeGraph | null>(null);
   const [projectName, setProjectName] = useState("");
 
   const [scene, setScene] = useState<BoardElement[]>([]);
   const [fitKey, setFitKey] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const graphRequest = useRef(0);
 
-  const analyzedGraph = useMemo(() => analyzeProject(files), [files]);
-  const graph = projectGraph ?? analyzedGraph;
+  const graph = projectGraph ?? analyzedGraph ?? EMPTY_GRAPH;
   const analytics = useMemo(() => computeAnalytics(graph), [graph]);
   const nodeById = useMemo(() => new Map(graph.nodes.map((node) => [node.id, node])), [graph]);
   const communities = useMemo(
@@ -56,6 +72,7 @@ export default function App() {
   }, [graph, kinds, community, query, analytics, localOnly, selected, depth]);
 
   const activeNode = activeId ? nodeById.get(activeId) : undefined;
+  const activeStartLine = activeNode?.startLine ?? activeNode?.line;
   const connections = useMemo(
     () => activeId ? explainNode(graph, activeId) : [],
     [graph, activeId],
@@ -64,23 +81,51 @@ export default function App() {
     () => activeId && pathTarget ? shortestPath(graph, activeId, pathTarget) : null,
     [graph, activeId, pathTarget],
   );
+  const pathCandidates = useMemo(() => {
+    if (!activeNode) return { options: [], total: 0 };
+    const needle = pathQuery.trim().toLowerCase();
+    const matches = graph.nodes
+      .filter((node) => node.id !== activeNode.id && (!needle || `${node.label} ${node.file}`.toLowerCase().includes(needle)))
+      .sort((a, b) => (analytics.degree.get(b.id) ?? 0) - (analytics.degree.get(a.id) ?? 0) || a.id.localeCompare(b.id));
+    return {
+      options: matches.slice(0, graph.nodes.length > PATH_FILTER_THRESHOLD ? PATH_OPTION_LIMIT : matches.length),
+      total: matches.length,
+    };
+  }, [graph, activeNode, pathQuery, analytics]);
 
   useEffect(() => {
-    if (!new URLSearchParams(window.location.search).has("project")) return;
+    const request = ++graphRequest.current;
     let active = true;
-    fetch("/api/sourcebeta/project")
-      .then(async (response) => {
-        if (!response.ok) throw new Error(await response.text());
-        return response.json() as Promise<{ name: string; graph: KnowledgeGraph }>;
-      })
-      .then((project) => {
-        if (!active) return;
-        setProjectName(project.name);
-        setProjectGraph(project.graph);
-      })
-      .catch((cause: Error) => {
-        if (active) setError(`Could not load project graph: ${cause.message}`);
-      });
+    if (PROJECT_QUERY) {
+      fetch("/api/sourcebeta/project")
+        .then(async (response) => {
+          if (!response.ok) throw new Error(await response.text());
+          return response.json() as Promise<{ name: string; graph: KnowledgeGraph }>;
+        })
+        .then((project) => {
+          if (!active || request !== graphRequest.current) return;
+          setProjectName(project.name);
+          setProjectGraph(project.graph);
+        })
+        .catch((cause: Error) => {
+          if (active && request === graphRequest.current) setError(`Could not load project graph: ${cause.message}`);
+        })
+        .finally(() => {
+          if (active && request === graphRequest.current) setBusy("");
+        });
+    } else {
+      import("./lib/analyzer")
+        .then(({ analyzeProject }) => {
+          if (!active || request !== graphRequest.current) return;
+          setAnalyzedGraph(analyzeProject(DEMO_FILES));
+        })
+        .catch((cause: Error) => {
+          if (active && request === graphRequest.current) setError(`Could not load the source analyzer: ${cause.message}`);
+        })
+        .finally(() => {
+          if (active && request === graphRequest.current) setBusy("");
+        });
+    }
     return () => {
       active = false;
     };
@@ -98,26 +143,48 @@ export default function App() {
   };
 
   const loadFiles = (next: SourceFileInput[]) => {
-    setFiles(next);
+    const request = ++graphRequest.current;
+    setAnalyzedGraph(null);
     setProjectGraph(null);
     setProjectName("");
     setSelected(new Set());
     setActiveId(null);
     setPathTarget("");
+    setPathQuery("");
     setQuery("");
     setLocalOnly(false);
+    setError("");
+    setNotice("");
+    setBusy("Analyzing source files…");
+    import("./lib/analyzer")
+      .then(({ analyzeProject }) => {
+        if (request !== graphRequest.current) return;
+        setAnalyzedGraph(analyzeProject(next));
+      })
+      .catch((cause: Error) => {
+        if (request === graphRequest.current) setError(`Could not analyze source files: ${cause.message}`);
+      })
+      .finally(() => {
+        if (request === graphRequest.current) setBusy("");
+      });
   };
 
   const openFolder = async () => {
     setError("");
+    setNotice("");
     try {
       if (!supportsDirectoryPicker()) {
         inputRef.current?.click();
         return;
       }
-      const picked = await pickProjectFromDirectory();
-      if (picked && picked.length > 0) loadFiles(picked);
-      else if (picked) setError("No supported files found. sourcebeta reads .ts, .js and .md files.");
+      const scan = await pickProjectFromDirectory();
+      if (!scan) return;
+      if (scan.files.length === 0) {
+        setError(NO_FILES);
+        return;
+      }
+      loadFiles(scan.files);
+      setNotice(scanNotice(scan));
     } catch (cause) {
       if ((cause as Error).name !== "AbortError") setError((cause as Error).message);
     }
@@ -155,11 +222,20 @@ export default function App() {
         {...{ webkitdirectory: "" }}
         onChange={async (event) => {
           const list = event.target.files;
-          if (list && list.length > 0) loadFiles(await readProjectFromInput(list));
+          if (list && list.length > 0) {
+            setError("");
+            const scan = await readProjectFromInput(list);
+            if (scan.files.length === 0) setError(NO_FILES);
+            else {
+              loadFiles(scan.files);
+              setNotice(scanNotice(scan));
+            }
+          }
           event.target.value = "";
         }}
       />
       {error && <div className="error">{error}</div>}
+      {notice && <div className="notice">{notice}</div>}
 
       {view === "graph" ? (
         <div className="workspace">
@@ -221,7 +297,7 @@ export default function App() {
           </aside>
 
           <main className="stage">
-            {visibleIds.size === 0 ? <p className="empty">No nodes match these filters.</p> : null}
+            {busy ? <p className="empty">{busy}</p> : visibleIds.size === 0 ? <p className="empty">No nodes match these filters.</p> : null}
             <GraphView
               graph={graph}
               analytics={analytics}
@@ -237,13 +313,18 @@ export default function App() {
             {activeNode ? (
               <>
                 <h2>{activeNode.label}</h2>
-                <p className="meta">{activeNode.kind} · {activeNode.file}{activeNode.line ? `:${activeNode.line}` : ""}</p>
                 <p className="meta">
-                  degree {analytics.degree.get(activeNode.id) ?? 0}
+                  {activeNode.kind} · {activeNode.file}{activeStartLine ? `:${activeStartLine}` : ""}
+                  {activeStartLine && activeNode.endLine && activeNode.endLine !== activeStartLine ? `–${activeNode.endLine}` : ""}
+                </p>
+                <p className="meta">
+                  degree {analytics.degree.get(activeNode.id) ?? 0} · PageRank {(analytics.rank.get(activeNode.id) ?? 0).toFixed(3)}
                   {analytics.community.has(activeNode.id) ? ` · community ${analytics.community.get(activeNode.id)}` : ""}
-                  {analytics.godNodes.includes(activeNode.id) ? " · god node" : ""}
+                  {analytics.cycle.has(activeNode.id) ? ` · ${analytics.cycle.get(activeNode.id)}-node cycle` : ""}
+                  {analytics.godNodes.includes(activeNode.id) ? " · key node" : ""}
                 </p>
                 <button onClick={() => setSelected(neighborhood(graph, [activeNode.id], 1))}>Select neighborhood</button>
+                <SourceView key={activeId} node={activeNode} source={graph.sources?.[activeNode.file]} />
                 <h3>Connections ({connections.length})</h3>
                 <ul className="connections">
                   {connections.map((connection, index) => (
@@ -257,12 +338,32 @@ export default function App() {
                   ))}
                 </ul>
                 <h3>Shortest path</h3>
+                {graph.nodes.length > PATH_FILTER_THRESHOLD && (
+                  <label className="field">
+                    Filter targets
+                    <input
+                      value={pathQuery}
+                      onChange={(event) => setPathQuery(event.target.value)}
+                      placeholder="target name or path"
+                    />
+                  </label>
+                )}
                 <select value={pathTarget} onChange={(event) => setPathTarget(event.target.value)}>
                   <option value="">Choose a target…</option>
-                  {graph.nodes.filter((node) => node.id !== activeNode.id).map((node) => (
+                  {pathTarget && nodeById.has(pathTarget) && !pathCandidates.options.some((node) => node.id === pathTarget) && (
+                    <option value={pathTarget}>{nodeById.get(pathTarget)!.label} ({nodeById.get(pathTarget)!.file})</option>
+                  )}
+                  {pathCandidates.options.map((node) => (
                     <option key={node.id} value={node.id}>{node.label} ({node.file})</option>
                   ))}
                 </select>
+                {graph.nodes.length > PATH_FILTER_THRESHOLD && (
+                  <p className="hint">
+                    {pathQuery.trim()
+                      ? `${pathCandidates.total} match${pathCandidates.total === 1 ? "" : "es"}`
+                      : `Showing ${pathCandidates.options.length} of ${pathCandidates.total} targets. Type to search.`}
+                  </p>
+                )}
                 {pathTarget && (path ? (
                   <ol className="path">
                     {path.map((id) => <li key={id}>{nodeById.get(id)?.label ?? id}</li>)}
@@ -278,7 +379,7 @@ export default function App() {
                     <li key={id}>
                       <button onClick={() => selectNode(id, false)}>
                         {nodeById.get(id)?.label ?? id}
-                        <em>degree {analytics.degree.get(id) ?? 0}</em>
+                        <em>PageRank {(analytics.rank.get(id) ?? 0).toFixed(3)} · degree {analytics.degree.get(id) ?? 0}</em>
                       </button>
                     </li>
                   ))}

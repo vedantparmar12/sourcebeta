@@ -8,6 +8,8 @@ export interface GraphNode {
   kind: NodeKind;
   file: string;
   line?: number;
+  startLine?: number;
+  endLine?: number;
 }
 
 export interface GraphEdge {
@@ -20,6 +22,7 @@ export interface GraphEdge {
 export interface KnowledgeGraph {
   nodes: GraphNode[];
   edges: GraphEdge[];
+  sources?: Record<string, string>;
 }
 
 export interface SourceFileInput {

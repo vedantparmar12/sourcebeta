@@ -1,8 +1,8 @@
 # Sourcebeta
 
-A local code knowledge graph and whiteboard for exploring JavaScript, TypeScript, and Markdown projects. Follow dependencies, inspect related symbols, and turn selected nodes into editable architecture diagrams.
+A local code knowledge graph and whiteboard for exploring JavaScript, TypeScript, Python, Java, Rust, Go, C/C++, and Markdown projects. Follow dependencies, inspect related symbols, and turn selected nodes into editable architecture diagrams.
 
-Sourcebeta implements its own Canvas2D graph renderer, force layout, community detection, and SVG whiteboard. Obsidian, Graphify, and Excalidraw are product inspirations, not embedded runtimes. React provides the UI, and the TypeScript compiler API parses source files.
+Sourcebeta implements its own Canvas2D graph renderer, force layout, community detection, PageRank, cycle detection, shortest paths, and SVG whiteboard. Obsidian, Graphify, and Excalidraw are product inspirations, not embedded runtimes. React provides the UI; the TypeScript compiler API and Lezer grammars parse source locally. No parser executes the project being inspected.
 
 ## Quick start
 
@@ -21,9 +21,9 @@ Use a current desktop browser. Chromium-based browsers support the native direct
 
 1. Click **Open folder** and choose the repository to inspect, or use **Demo project** to try the built-in example.
 2. Search by symbol name or file path. Filter files, functions, classes, notes, or communities.
-3. Click a node to inspect its source location, incoming/outgoing connections, and degree. Ctrl/Cmd-click adds or removes nodes from the selection.
+3. Click a node to inspect its numbered source, incoming/outgoing connections, degree, PageRank, community, and dependency-cycle membership. **Whole file** displays all the file's text; **Symbol** returns to the selected definition. Collapse **Source** to give connections more room. Ctrl/Cmd-click adds or removes nodes from the selection.
 4. Use **Select neighbors** or **Local graph around selection** to focus on a one- or two-hop neighborhood.
-5. Choose a target in **Shortest path** to see a connecting route. Paths and neighborhoods traverse relationships in either direction, even though graph edges retain their direction.
+5. Choose a target in **Shortest path** to see a connecting route. On larger graphs, **Filter targets** searches a bounded list instead of rendering every node. Paths and neighborhoods traverse relationships in either direction, even though graph edges retain their direction.
 6. Click **Send nodes to canvas** to create architecture cards and bound connectors from the selection.
 
 Drag a graph node to move and pin it. Drag the background to pan, scroll to zoom around the pointer, and use **Fit graph** to frame the visible nodes.
@@ -33,16 +33,16 @@ Drag a graph node to move and pin it. Drag the background to pan, scroll to zoom
 | Item | Meaning |
 | --- | --- |
 | File | A supported source file |
-| Function or class | A top-level declaration found by the analyzer |
+| Function or class | A declaration, method, nested function/class, callback, or lambda found by the analyzer |
 | Note | A Markdown file |
 | `imports` | A resolved local import or re-export |
-| `contains` | A file owns a symbol |
+| `contains` | A file, class, or function owns a nested symbol |
 | `calls` | A recognized identifier call between symbols |
-| `links` | A Markdown `[[wikilink]]` resolved by note title |
+| `links` | A Markdown `[[wikilink]]` or a local Markdown file link |
 | `EXTRACTED` | Connected directly through supported source syntax/name resolution |
 | `INFERRED` | Matched through a name that is unique across the project; confirm it in source |
 
-Node colors represent communities, and node sizes reflect degree. Community detection uses deterministic label propagation, not Louvain. The **Key nodes** list shows up to five nodes with the highest positive degree.
+Node colors represent communities, and node sizes reflect degree. Community detection uses deterministic label propagation, not Louvain. The **Key nodes** list shows up to five connected nodes with the highest PageRank (degree breaks ties). PageRank uses damping 0.85 with at most 30 normalized passes, including dangling-node redistribution. Dependency cycles are strongly connected components found with iterative Tarjan traversal, so deep graphs do not hit recursion limits. Neighborhoods and connection details use a cached adjacency index, and shortest paths use bidirectional breadth-first search.
 
 ## Draw on the whiteboard
 
@@ -67,9 +67,9 @@ flowchart TD
     Demo[Built-in demo files] --> Inputs[Source file inputs]
     Folder[Open local project folder] --> Loader[Filter supported files and enforce size limits]
     Loader --> Inputs
-    Inputs --> Analyzer[TypeScript AST and Markdown wikilink analyzer]
+    Inputs --> Analyzer[JS/TS, Python, Java, Rust, Go and C/C++ syntax plus Markdown links]
     Analyzer --> Graph[Nodes and typed edges with confidence]
-    Graph --> Analytics[Degree and community analysis]
+    Graph --> Analytics[Degree, PageRank, communities, cycles and shortest paths]
     Graph --> Filters[Search, kind, community and neighborhood filters]
     Analytics --> Filters
     Filters --> Layout[Custom force layout]
@@ -94,8 +94,12 @@ flowchart TD
 | --- | --- |
 | `src/App.tsx` | Project loading, filters, selection, graph analytics, and whiteboard scene state |
 | `src/lib/loadFiles.ts` | Browser folder loading and input limits |
-| `src/lib/analyzer.ts` | Source parsing, import/call resolution, notes, and edge deduplication |
-| `src/lib/analytics.ts` | Degree, communities, neighborhoods, paths, and connection details |
+| `src/lib/analyzer.ts` | TypeScript traversal, language dispatch, scoped import/call resolution, notes, and source text |
+| `src/lib/python.ts` | Python classes, methods, nested functions, lambdas, imports, and source ranges |
+| `src/lib/java.ts`, `rust.ts`, `go.ts`, `cpp.ts` | Lezer-based symbols, imports, receiver inference, and package/module/include resolution |
+| `src/lib/lezer.ts` | Shared Lezer source ranges, qualified symbol IDs, and import edges |
+| `src/components/SourceView.tsx` | Numbered symbol source and full-file inspection |
+| `src/lib/analytics.ts` | Cached graph index, PageRank, Tarjan cycles, communities, bidirectional paths, and connection details |
 | `src/lib/layout.ts` | Deterministic seeding, bounded force simulation, fitting, and hit testing |
 | `src/components/GraphView.tsx` | Canvas2D painting, graph interactions, and animation frames |
 | `src/lib/canvas.ts` | Native board model, connector geometry, graph-to-card conversion, and artwork import |
@@ -107,7 +111,9 @@ flowchart TD
 
 The graph simulation and painting run through `requestAnimationFrame` rather than React state updates on every simulation tick. Spatial sampling bounds repulsion work, and the simulation stops after settling or its tick limit.
 
-`App.tsx` memoizes graph analysis, connection details, and shortest paths. `BoardShape` uses React's `memo`, including recursive artwork rendering. Its scene-array prop still changes when the scene is edited, so this wrapper does not eliminate all drag-time renders; bound arrows must update when their endpoint shapes move.
+The TypeScript compiler, Lezer grammars, and analyzer are code-split into a separate chunk and imported only when a folder or the demo is analyzed. Precomputed project views (`?project=1`) do not download that chunk. The current production shell is about 270 kB before gzip; the lazy analyzer chunk is about 3.9 MB (1.13 MB gzip), dominated by the TypeScript compiler.
+
+`App.tsx` memoizes analytics, connection details, and shortest paths. `BoardShape` uses React's `memo`, including recursive artwork rendering. Its scene-array prop still changes when the scene is edited, so this wrapper does not eliminate all drag-time renders; bound arrows must update when their endpoint shapes move.
 
 ## Claude Code skill
 
@@ -153,7 +159,7 @@ bun .claude/skills/sourcebeta/scripts/sourcebeta.mjs /path/to/project --open
 
 Omit the target path to scan the current working directory. Queries match symbol names and paths by case-insensitive substring, not semantic search. Output includes source locations and confidence labels, capped at five key nodes, eight matches, and five connections per match; follow up with source reads/searches for complete impact analysis.
 
-Analysis alone prints a bounded summary, without opening a browser or writing a graph cache. `--open` writes graph metadata under the operating system's temporary directory, starts or reuses a localhost Vite server, and opens `?project=1`. The app loads that graph through `/api/sourcebeta/project`; this endpoint exists only in the development server. Sourcebeta does not execute the scanned project's code.
+Analysis alone prints a bounded summary, without opening a browser or writing a graph cache. `--open` writes the graph **and complete supported-file source text** under the operating system's temporary directory, starts or reuses a localhost Vite server, and opens `?project=1`. The app loads that graph through `/api/sourcebeta/project`; this endpoint exists only in the development server. Keep these caches private and the server on loopback: source may contain credentials or other sensitive data. Sourcebeta does not execute the scanned project's code.
 
 ```mermaid
 flowchart LR
@@ -170,14 +176,17 @@ The graph is navigation assistance, not proof of runtime behavior. Claude still 
 
 ## Limits and privacy
 
-- Supported extensions: `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.md`, and `.markdown`.
-- Folder loading accepts at most 2,000 supported files and skips files larger than 1,000,000 bytes, plus common dependency/build directories.
-- The analyzer resolves relative local imports, not package imports or TypeScript path aliases. It is not a full type-checked language-server index.
-- Symbol discovery covers top-level functions/classes and directly assigned function expressions/arrows. Methods are not separate nodes, and functions wrapped in calls such as `memo(...)` are not discovered as standalone function nodes.
-- Calls use identifier/name resolution; dynamic dispatch, property-access calls, and alias-heavy code may be incomplete. Even `EXTRACTED` edges reflect this analyzer's supported rules, not exhaustive runtime analysis.
-- Markdown links currently use `[[wikilinks]]` and note titles, not general Markdown link resolution.
-- Analysis runs locally. The normal folder-picker workflow does not upload project files to an external service. Keep the development server on loopback, especially when serving precomputed project metadata.
-- The browser bundles the TypeScript parser, so the production build currently emits a large-chunk warning. This is separate from interactive rendering performance.
+- Supported extensions: `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.py`, `.pyi`, `.java`, `.rs`, `.go`, `.c`, `.h`, `.cc`, `.cpp`, `.cxx`, `.hpp`, `.hh`, `.hxx`, `.md`, and `.markdown`. Other languages are not indexed.
+- Folder loading and the skill launcher accept at most 2,000 supported files and skip files larger than 1,000,000 bytes. They ignore common dependency, build, VCS, Python cache, and virtual-environment directories.
+- The app reports when the limit or size cap omits files; the launcher prints the same warnings. Source is complete only for files accepted by that scan.
+- Symbol discovery recursively includes functions, classes, methods, nested definitions, callbacks, wrapped functions, closures, and lambdas. Java records/annotations, Rust structs/enums/traits/impls, Go named types and receiver methods, C/C++ namespaces and out-of-line methods are included. C/C++ prototypes merge with matching definitions; TypeScript overloads share a symbol; repeated Python definitions retain separate IDs. Syntax unsupported by the parsers may be incomplete.
+- Selected symbols show numbered source ranges, including decorators; **Whole file** shows all lines. Lines are text, not individual graph nodes. Comments, imports, and other non-symbol statements remain accessible in file source.
+- TypeScript resolves relative local imports, not package aliases. Python resolves local modules/packages, relative imports, and conventional `src` roots. Java resolves packages, static/wildcard imports, and common `src/main/java` roots. Rust resolves `crate`/`self`/`super`, `mod`, and nested `use` trees. Go resolves package directories by unique import-path suffix, dot imports, same-package files, and package-level constructor return types. C/C++ resolves quoted includes by relative path or unique suffix. Re-export forwarding and arbitrary import-path configuration are not fully resolved.
+- Calls use lexical scopes, imports, package namespaces, and recognized receiver types, with a unique top-level-name fallback labeled `INFERRED`. Arbitrary receiver expressions, dynamic dispatch, macros/templates with dependent types, and shadowing beyond recognized parameters/definitions can remain unresolved or ambiguous. Even `EXTRACTED` edges are not exhaustive runtime analysis.
+- Markdown connects `[[wikilinks]]` and simple inline local Markdown file links. Reference-style links, encoded paths, and full Markdown semantics are not supported.
+- Analysis runs locally and does not upload project files to an external service. The graph carries source text once per file; precomputed caches also contain it.
+- The project endpoint accepts only loopback GET requests and sends `no-store`/`nosniff` headers. On POSIX, the skill creates its temporary source cache with user-only permissions. Keep development servers on loopback and do not copy or publish caches.
+- The lazy parser/analyzer chunk is still large because it bundles the TypeScript compiler, so the production build emits a large-chunk warning for it. This affects analyzer startup, not the initial shell or precomputed project views.
 
 ## Development and verification
 
@@ -188,7 +197,7 @@ bun scripts/skill-check.mjs
 bun run --bun build
 ```
 
-The current unit suite contains 30 tests covering the analyzer, analytics, native board geometry/artwork, and force layout. The skill checks validate metadata, focused output, scan limits, error cases, and using a copied skill from another project.
+The unit suite covers TypeScript, Python, Java, Rust, Go, and C/C++ extraction, nested scopes, source ranges, cross-file imports/packages, malformed input, determinism, PageRank, Tarjan cycles, bidirectional shortest paths, native board geometry/artwork, and force layout. The skill checks validate metadata, focused output including Python and Java symbols, scan limits, error cases, and using a copied skill from another project.
 
 For browser verification, install Microsoft Edge and keep the development server running in another terminal:
 

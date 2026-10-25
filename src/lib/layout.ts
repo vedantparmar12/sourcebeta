@@ -55,7 +55,7 @@ export function createLayout(graph: KnowledgeGraph, analytics: GraphAnalytics): 
   return { nodes, edges };
 }
 
-export function stepLayout(layout: GraphLayout, heat: number): number {
+export function stepLayout(layout: GraphLayout, heat: number, repulsionSamples = 12): number {
   const cells = new Map<string, LayoutNode[]>();
   for (const node of layout.nodes) {
     const key = `${Math.floor(node.x / 100)},${Math.floor(node.y / 100)}`;
@@ -74,7 +74,7 @@ export function stepLayout(layout: GraphLayout, heat: number): number {
         const cell = cells.get(`${x},${y}`);
         if (!cell) continue;
         // Sampling caps work even if thousands of nodes occupy the same cell.
-        const count = Math.min(cell.length, 12);
+        const count = Math.min(cell.length, repulsionSamples);
         for (let sample = 0; sample < count; sample++) {
           const other = cell[(Math.floor(sample * cell.length / count) + index) % cell.length];
           if (other === node) continue;

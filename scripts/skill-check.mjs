@@ -46,9 +46,14 @@ try {
   await writeFile(join(project, "src/other.ts"), "export function inferred() { return 1; }\n");
   await writeFile(join(project, "src/many.ts"), Array.from({ length: 12 }, (_, i) => `export function many${i}() { return ${i}; }`).join("\n"));
   await writeFile(join(project, "notes/Guide.md"), "# Guide\n");
+  await writeFile(join(project, "src/service.py"), "class Service:\n    def run(self):\n        def nested():\n            return 1\n        return nested()\n");
+  await writeFile(join(project, "src/Main.java"), "class Main {\n  void run() { helper(); }\n  void helper() {}\n}\n");
+  await writeFile(join(project, "src/lib.rs"), "fn helper() {}\nfn run() { helper(); }\n");
+  await writeFile(join(project, "src/service.go"), "package svc\n\nfunc Run() {}\n");
+  await writeFile(join(project, "src/main.c"), "int helper() { return 1; }\nint run() { return helper(); }\n");
   await writeFile(join(project, "src/oversized.ts"), "//" + "x".repeat(1_000_000));
   await writeFile(join(project, "unsupported.txt"), "not a source file");
-  for (const directory of ["node_modules", ".git", "dist"]) {
+  for (const directory of ["node_modules", ".git", "dist", ".venv", "__pycache__"]) {
     await mkdir(join(project, directory));
     await writeFile(join(project, directory, "ignored.ts"), "export function ignored() {}\n");
   }
@@ -59,7 +64,8 @@ try {
 
   const summary = run();
   assert.equal(summary.status, 0, summary.stderr);
-  assert.match(summary.stdout, /Scanned: 5 supported files/);
+  assert.match(summary.stdout, /Scanned: 10 supported files/);
+  assert.match(summary.stdout, /Skipped: 1 file larger than 1 MB/);
   assert.ok(!summary.stdout.includes("App:"));
   assert.ok(!summary.stdout.includes("TARGET_CODE_MUST_NOT_EXECUTE"));
   assert.ok(!summary.stdout.includes("PRIVATE_SOURCE_BODY"));
@@ -79,7 +85,15 @@ try {
   const absent = run(["--query", "not-present"]);
   assert.equal(absent.status, 0, absent.stderr);
   assert.match(absent.stdout, /Matches for "not-present": 0/);
-  console.log("ok - focused context reports locations, confidence, bounded matches and no-match results");
+  const python = run(["--query", "Service.run"]);
+  assert.equal(python.status, 0, python.stderr);
+  assert.match(python.stdout, /Service\.run \[function\] src\/service\.py:2/);
+  assert.match(python.stdout, /Service\.run\.nested \[function\] src\/service\.py:3/);
+  const java = run(["--query", "Main.run"]);
+  assert.equal(java.status, 0, java.stderr);
+  assert.match(java.stdout, /Main\.run \[function\] src\/Main\.java:2/);
+  assert.match(java.stdout, /-> Main\.helper \[calls EXTRACTED\]/);
+  console.log("ok - focused context reports nested Python symbols, locations, confidence, bounded matches and no-match results");
 
   for (const args of [["--query"], ["--query", "--open"], ["--unknown"], [project, project], [join(project, "missing")]]) {
     const invalid = run(args);
@@ -91,7 +105,7 @@ try {
   await mkdir(emptyRoot);
   const empty = run([emptyRoot]);
   assert.equal(empty.status, 1);
-  assert.match(empty.stderr, /No supported JS, TS, or Markdown files/);
+  assert.match(empty.stderr, /No supported JS, TS, Python, Java, Rust, Go, C\/C\+\+, or Markdown files/);
   console.log("ok - invalid options and missing or empty projects produce concise errors");
 
   const installed = join(temporary, "personal/.claude/skills/sourcebeta");

@@ -12,6 +12,11 @@
     "test:browser": "node scripts/browser-check.mjs"
   },
   "dependencies": {
+    "@lezer/cpp": "^1.1.6",
+    "@lezer/go": "^1.0.1",
+    "@lezer/java": "^1.1.5",
+    "@lezer/python": "^1.1.19",
+    "@lezer/rust": "^1.0.3",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
   },

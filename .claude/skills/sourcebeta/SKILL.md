@@ -1,6 +1,6 @@
 ---
 name: sourcebeta
-description: Use Sourcebeta's local code knowledge graph to investigate bugs, trace dependencies and callers, understand unfamiliar JavaScript/TypeScript/Markdown projects, and plan small evidence-based code changes. Use when the user asks for Sourcebeta, code-graph context, impact analysis, or architecture visualization. Use the original Sourcebeta analyzer, not Graphify, Obsidian, or Excalidraw runtimes.
+description: Use Sourcebeta's local code knowledge graph to investigate bugs, trace dependencies and callers, understand unfamiliar JavaScript/TypeScript/Python/Java/Rust/Go/C/C++/Markdown projects, and plan small evidence-based code changes. Use when the user asks for Sourcebeta, code-graph context, impact analysis, or architecture visualization. Use the original Sourcebeta analyzer, not Graphify, Obsidian, or Excalidraw runtimes.
 argument-hint: "[problem, symbol, file, or visualization request]"
 ---
 
@@ -45,8 +45,9 @@ Use the printed localhost URL to inspect the custom graph. Filter/select nodes, 
 
 ## Respect analyzer limits
 
-- Read `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.md`, and `.markdown`; cap scans at 2,000 files and 1,000,000 bytes per file. Skip symlinks and common dependency/build directories.
-- Resolve relative imports, top-level functions/classes, directly assigned functions, identifier calls, and Markdown wikilinks. Do not assume package aliases, property calls, wrapped functions, or dynamic behavior are indexed.
+- Read `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.py`, `.pyi`, `.java`, `.rs`, `.go`, `.c`, `.h`, `.cc`, `.cpp`, `.cxx`, `.hpp`, `.hh`, `.hxx`, `.md`, and `.markdown`; cap scans at 2,000 files and 1,000,000 bytes per file. Skip symlinks and common dependency/build directories.
+- Discover functions, classes, methods, nested definitions, callbacks, and lambdas with source ranges. Inspect numbered symbol source or the whole file in the UI. Link supported local imports and scoped calls; do not assume arbitrary receiver types, package aliases, or dynamic behavior are resolved.
+- Treat `--open` graph caches as sensitive: they now include full source text, not just graph metadata. Keep the server on loopback and do not publish its cache.
 - Verify `INFERRED` name matches in source. Even `EXTRACTED` edges reflect limited syntax/name resolution, not a complete type-checked call graph.
 - Keep analysis local. Do not execute target project code as part of scanning or upload source to external graph services.
 

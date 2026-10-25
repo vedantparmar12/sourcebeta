@@ -44,14 +44,25 @@ hr { border: none; border-top: 1px solid #2a2e38; margin: 14px 0; }
 .tab.active { background: #5b4fd6; border-color: #6c5ce7; }
 .stats { margin-left: auto; color: #9aa1ae; font-size: 13px; }
 .error { padding: 8px 16px; background: #4d2230; color: #ffb3c2; }
+.notice { padding: 8px 16px; background: #3d3420; color: #f0d899; }
 
 .workspace { display: grid; grid-template-columns: 250px 1fr 300px; flex: 1; min-height: 0; }
 .panel { padding: 14px; overflow-y: auto; background: #14161c; }
 .controls { border-right: 1px solid #262a33; display: flex; flex-direction: column; gap: 10px; }
-.details { border-left: 1px solid #262a33; }
+.details { border-left: 1px solid #262a33; min-width: 0; }
 .details h2 { margin: 0 0 4px; font-size: 18px; word-break: break-word; }
 .details h3 { margin: 16px 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; color: #9aa1ae; }
 .meta { margin: 2px 0; color: #9aa1ae; font-size: 12px; word-break: break-all; }
+.source-view { margin-top: 14px; min-width: 0; }
+.source-view summary { cursor: pointer; font-size: 13px; font-weight: 600; }
+.source-range { margin: 8px 0; color: #9aa1ae; font-size: 12px; overflow-wrap: anywhere; }
+.source-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; font-size: 11px; color: #9aa1ae; }
+.source-toolbar button { font-size: 11px; padding: 4px 8px; }
+.source-code { display: flex; width: 100%; min-width: 0; max-height: min(320px, 45vh); overflow: auto; border: 1px solid #343945; border-radius: 6px; background: #101217; }
+.source-code pre { flex-shrink: 0; margin: 0; padding: 8px 10px; font: 12px/1.6 Consolas, "Liberation Mono", monospace; white-space: pre; tab-size: 4; }
+.source-gutter { color: #8b93a1; text-align: right; user-select: none; border-right: 1px solid #262a33; }
+.source-text { flex-grow: 1; }
+.source-code:focus-visible, .source-view summary:focus-visible { outline: 2px solid #8b7ff0; outline-offset: 2px; }
 .field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: #c3c9d4; }
 .check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #c3c9d4; }
 .check input { width: auto; }

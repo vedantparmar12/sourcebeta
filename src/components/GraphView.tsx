@@ -45,6 +45,9 @@ export function GraphView({ graph, analytics, visibleIds, selected, activeId, on
     let frameId = 0;
     let ticks = 0;
     let autoFit = true;
+    const maxTicks = layout.nodes.length > 8000 ? 60 : layout.nodes.length > 4000 ? 90 : 150;
+    const repulsionSamples = layout.nodes.length > 8000 ? 6 : 12;
+    const settleThreshold = layout.nodes.length > 4000 ? 0.04 : 0.015;
     let hovered: LayoutNode | undefined;
     let drag: { node?: LayoutNode; x: number; y: number; startX: number; startY: number; cameraX: number; cameraY: number; fixed: boolean; moved: boolean; pointerId: number } | null = null;
 
@@ -130,15 +133,15 @@ export function GraphView({ graph, analytics, visibleIds, selected, activeId, on
     };
     const render = () => {
       frameId = 0;
-      if (ticks < 150) {
-        const motion = stepLayout(layout, Math.max(0.08, 1 - ticks / 150));
+      if (ticks < maxTicks) {
+        const motion = stepLayout(layout, Math.max(0.08, 1 - ticks / maxTicks), repulsionSamples);
         ticks++;
-        if (ticks > 50 && motion < 0.015) ticks = 150;
-        if (autoFit && (ticks % 20 === 0 || ticks === 150)) fit();
+        if (ticks > Math.min(50, maxTicks / 2) && motion < settleThreshold) ticks = maxTicks;
+        if (autoFit && (ticks % 20 === 0 || ticks === maxTicks)) fit();
       }
-      element.dataset.layoutState = ticks < 150 ? "running" : "settled";
+      element.dataset.layoutState = ticks < maxTicks ? "running" : "settled";
       paint();
-      if (ticks < 150) schedule();
+      if (ticks < maxTicks) schedule();
     };
     const schedule = () => { if (!frameId) frameId = requestAnimationFrame(render); };
     const zoomAt = (factor: number, x: number, y: number) => {

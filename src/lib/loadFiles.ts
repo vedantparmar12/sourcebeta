@@ -1,11 +1,11 @@
-import { normalizePath, SUPPORTED_EXTENSIONS } from "./analyzer";
+import { MAX_FILES, MAX_FILE_BYTES, normalizePath, SKIPPED_DIRECTORIES, SUPPORTED_EXTENSIONS } from "./scan";
 import type { SourceFileInput } from "./types";
 
-const SKIPPED_DIRECTORIES = new Set([
-  "node_modules", ".git", "dist", "build", "coverage", ".next", "out", "target", "vendor", ".venv",
-]);
-const MAX_FILES = 2000;
-const MAX_FILE_BYTES = 1_000_000;
+export interface ProjectScan {
+  files: SourceFileInput[];
+  truncated: boolean;
+  skippedLarge: number;
+}
 
 function supported(path: string): boolean {
   return SUPPORTED_EXTENSIONS.some((extension) => path.toLowerCase().endsWith(extension));
@@ -30,16 +30,16 @@ export function supportsDirectoryPicker(): boolean {
   return typeof (window as unknown as { showDirectoryPicker?: unknown }).showDirectoryPicker === "function";
 }
 
-export async function pickProjectFromDirectory(): Promise<SourceFileInput[] | null> {
+export async function pickProjectFromDirectory(): Promise<ProjectScan | null> {
   const picker = (window as unknown as {
     showDirectoryPicker: () => Promise<DirectoryHandleLike>;
   }).showDirectoryPicker;
   const root = await picker();
-  const files: SourceFileInput[] = [];
+  const scan: ProjectScan = { files: [], truncated: false, skippedLarge: 0 };
 
   const walk = async (directory: DirectoryHandleLike, prefix: string) => {
     for await (const entry of directory.values()) {
-      if (files.length >= MAX_FILES) return;
+      if (scan.truncated) return;
       if (entry.kind === "directory") {
         if (!SKIPPED_DIRECTORIES.has(entry.name)) {
           await walk(entry as DirectoryHandleLike, `${prefix}${entry.name}/`);
@@ -48,25 +48,39 @@ export async function pickProjectFromDirectory(): Promise<SourceFileInput[] | nu
       }
       if (!supported(entry.name)) continue;
       const file = await (entry as FileHandleLike).getFile();
-      if (file.size > MAX_FILE_BYTES) continue;
-      files.push({ path: normalizePath(prefix + entry.name), content: await file.text() });
+      if (file.size > MAX_FILE_BYTES) {
+        scan.skippedLarge += 1;
+        continue;
+      }
+      if (scan.files.length >= MAX_FILES) {
+        scan.truncated = true;
+        return;
+      }
+      scan.files.push({ path: normalizePath(prefix + entry.name), content: await file.text() });
     }
   };
 
   await walk(root, "");
-  return files;
+  return scan;
 }
 
-export async function readProjectFromInput(fileList: FileList): Promise<SourceFileInput[]> {
-  const files: SourceFileInput[] = [];
+export async function readProjectFromInput(fileList: FileList): Promise<ProjectScan> {
+  const scan: ProjectScan = { files: [], truncated: false, skippedLarge: 0 };
   for (const file of Array.from(fileList)) {
-    if (files.length >= MAX_FILES) break;
     const relative = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
     const parts = normalizePath(relative).split("/");
     if (parts.some((part) => SKIPPED_DIRECTORIES.has(part))) continue;
-    if (!supported(file.name) || file.size > MAX_FILE_BYTES) continue;
+    if (!supported(file.name)) continue;
+    if (file.size > MAX_FILE_BYTES) {
+      scan.skippedLarge += 1;
+      continue;
+    }
+    if (scan.files.length >= MAX_FILES) {
+      scan.truncated = true;
+      break;
+    }
     // Drop the selected root directory name so imports resolve project-relative.
-    files.push({ path: parts.slice(1).join("/") || file.name, content: await file.text() });
+    scan.files.push({ path: parts.slice(1).join("/") || file.name, content: await file.text() });
   }
-  return files;
+  return scan;
 }

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { access, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
@@ -8,9 +8,6 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 
 const DEFAULT_APP = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
-const SKIPPED = new Set(["node_modules", ".git", "dist", "build", "coverage", ".next", "out", "target", "vendor", ".venv"]);
-const MAX_FILES = 2000;
-const MAX_FILE_BYTES = 1_000_000;
 
 function parseArguments(args) {
   const paths = [];
@@ -33,23 +30,32 @@ function parseArguments(args) {
   return { root: resolve(paths[0] ?? "."), query: query.trim().toLowerCase(), open };
 }
 
-async function scanProject(root, extensions, normalizePath) {
+async function scanProject(root, extensions, normalizePath, limits) {
   const files = [];
+  let truncated = false;
+  let skippedLarge = 0;
   const walk = async (directory) => {
-    if (files.length >= MAX_FILES) return;
+    if (truncated) return;
     const entries = (await readdir(directory, { withFileTypes: true }))
       .sort((a, b) => a.name.localeCompare(b.name));
     for (const entry of entries) {
-      if (files.length >= MAX_FILES) return;
+      if (truncated) return;
       if (entry.isSymbolicLink()) continue;
       const fullPath = join(directory, entry.name);
       if (entry.isDirectory()) {
-        if (!SKIPPED.has(entry.name)) await walk(fullPath);
+        if (!limits.skipped.has(entry.name)) await walk(fullPath);
         continue;
       }
       if (!entry.isFile() || !extensions.some((extension) => entry.name.toLowerCase().endsWith(extension))) continue;
       const metadata = await stat(fullPath);
-      if (metadata.size > MAX_FILE_BYTES) continue;
+      if (metadata.size > limits.maxBytes) {
+        skippedLarge += 1;
+        continue;
+      }
+      if (files.length >= limits.maxFiles) {
+        truncated = true;
+        return;
+      }
       files.push({
         path: normalizePath(relative(root, fullPath)),
         content: await readFile(fullPath, "utf8"),
@@ -57,19 +63,22 @@ async function scanProject(root, extensions, normalizePath) {
     }
   };
   await walk(root);
-  return files;
+  return { files, truncated, skippedLarge };
 }
 
-function printSummary(root, graph, analytics, explainNode, query, fileCount) {
+function printSummary(root, graph, analytics, explainNode, query, scan, maxBytes) {
   const counts = { file: 0, function: 0, class: 0, note: 0 };
   for (const node of graph.nodes) counts[node.kind] += 1;
   console.log(`Project: ${basename(root)}`);
-  console.log(`Scanned: ${fileCount} supported files${fileCount >= MAX_FILES ? " (file cap reached)" : ""}`);
+  console.log(`Scanned: ${scan.files.length} supported files${scan.truncated ? " (file cap reached)" : ""}`);
+  if (scan.skippedLarge > 0) {
+    console.log(`Skipped: ${scan.skippedLarge} file${scan.skippedLarge === 1 ? "" : "s"} larger than ${maxBytes / 1_000_000} MB`);
+  }
   console.log(`Graph: ${graph.nodes.length} nodes, ${graph.edges.length} edges | ${counts.file} files, ${counts.function} functions, ${counts.class} classes, ${counts.note} notes`);
   console.log("Key nodes:");
   for (const id of analytics.godNodes) {
     const node = graph.nodes.find((candidate) => candidate.id === id);
-    console.log(`- ${node.label} [${node.kind}] ${node.file} (degree ${analytics.degree.get(id)})`);
+    console.log(`- ${node.label} [${node.kind}] ${node.file} (PageRank ${(analytics.rank.get(id) ?? 0).toFixed(3)}, degree ${analytics.degree.get(id)})`);
   }
   if (!query) return;
   const matches = graph.nodes
@@ -127,7 +136,7 @@ async function startApp(appRoot, graphFile, serverFile, root) {
     stdio: "ignore",
   });
   child.unref();
-  await writeFile(serverFile, JSON.stringify({ pid: child.pid, port }));
+  await writeFile(serverFile, JSON.stringify({ pid: child.pid, port }), { mode: 0o600 });
   const url = `http://127.0.0.1:${port}/?project=1`;
   for (let attempt = 0; attempt < 100; attempt++) {
     try {
@@ -155,21 +164,31 @@ try {
   await access(join(appRoot, "src/lib/analyzer.ts")).catch(() => {
     throw new Error("Sourcebeta app not found. Set SOURCEBETA_HOME to the Sourcebeta checkout and run bun install there.");
   });
+  const rootInfo = await stat(options.root).catch(() => null);
+  if (!rootInfo?.isDirectory()) throw new Error(`Project directory not found: ${options.root}`);
   const analyzerUrl = pathToFileURL(join(appRoot, "src/lib/analyzer.ts")).href;
   const analyticsUrl = pathToFileURL(join(appRoot, "src/lib/analytics.ts")).href;
-  const { analyzeProject, SUPPORTED_EXTENSIONS, normalizePath } = await import(analyzerUrl);
+  const scanUrl = pathToFileURL(join(appRoot, "src/lib/scan.ts")).href;
+  const { analyzeProject } = await import(analyzerUrl);
   const { computeAnalytics, explainNode } = await import(analyticsUrl);
-  const files = await scanProject(options.root, SUPPORTED_EXTENSIONS, normalizePath);
-  if (files.length === 0) throw new Error(`No supported JS, TS, or Markdown files found in ${options.root}`);
-  const graph = analyzeProject(files);
+  const { MAX_FILES, MAX_FILE_BYTES, normalizePath, SKIPPED_DIRECTORIES, SUPPORTED_EXTENSIONS } = await import(scanUrl);
+  const scan = await scanProject(options.root, SUPPORTED_EXTENSIONS, normalizePath, {
+    skipped: SKIPPED_DIRECTORIES,
+    maxFiles: MAX_FILES,
+    maxBytes: MAX_FILE_BYTES,
+  });
+  if (scan.files.length === 0) throw new Error(`No supported JS, TS, Python, Java, Rust, Go, C/C++, or Markdown files found in ${options.root}`);
+  const graph = analyzeProject(scan.files);
   const analytics = computeAnalytics(graph);
-  printSummary(options.root, graph, analytics, explainNode, options.query, files.length);
+  printSummary(options.root, graph, analytics, explainNode, options.query, scan, MAX_FILE_BYTES);
   if (options.open) {
     const id = createHash("sha256").update(`${appRoot}\0${options.root}`).digest("hex").slice(0, 16);
     const graphFile = join(tmpdir(), "sourcebeta", `${id}.json`);
     const serverFile = join(tmpdir(), "sourcebeta", `${id}.server.json`);
-    await mkdir(dirname(graphFile), { recursive: true });
-    await writeFile(graphFile, JSON.stringify({ name: basename(options.root), root: options.root, graph }));
+    await mkdir(dirname(graphFile), { recursive: true, mode: 0o700 });
+    if (process.platform !== "win32") await chmod(dirname(graphFile), 0o700);
+    await writeFile(graphFile, JSON.stringify({ name: basename(options.root), root: options.root, graph }), { mode: 0o600 });
+    if (process.platform !== "win32") await chmod(graphFile, 0o600);
     const url = await startApp(appRoot, graphFile, serverFile, options.root);
     console.log(`App: ${url}`);
     openBrowser(url);

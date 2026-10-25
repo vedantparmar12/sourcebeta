@@ -25,7 +25,7 @@ const gesture = async (from, to) => {
 try {
   await page.goto(baseUrl, { waitUntil: "networkidle" });
   await page.getByRole("button", { name: /store\.ts/ }).waitFor();
-  assert((await page.locator(".stats").innerText()).includes("15 nodes"), "demo graph loads with stats");
+  assert((await page.locator(".stats").innerText()).includes("18 nodes"), "demo graph loads with stats");
   const graphCanvas = page.getByRole("application", { name: "Sourcebeta code graph", exact: true });
   await page.waitForFunction(() => document.querySelector(".graph-view canvas")?.dataset.layoutState === "settled");
   const coloredPixels = await graphCanvas.evaluate((canvas) => {
@@ -35,7 +35,8 @@ try {
     return colored;
   });
   assert(coloredPixels > 100, "custom Canvas2D renderer paints colored graph nodes");
-  await page.getByPlaceholder("name or path").fill("TaskStore");
+  await page.getByLabel("functions", { exact: true }).uncheck();
+  await page.getByLabel("Search", { exact: true }).fill("TaskStore");
   await page.getByRole("button", { name: "Fit graph", exact: true }).click();
   const graphBox = await graphCanvas.boundingBox();
   const center = { x: graphBox.x + graphBox.width / 2, y: graphBox.y + graphBox.height / 2 };
@@ -55,16 +56,17 @@ try {
   await graphCanvas.press("Escape");
   await page.mouse.click(center.x + 150, center.y + 50);
   assert((await page.locator(".details h2").innerText()) === "TaskStore", "wheel zoom stays anchored under the pointer");
-  await page.getByPlaceholder("name or path").fill("formatTask");
+  await page.getByLabel("functions", { exact: true }).check();
+  await page.getByLabel("Search", { exact: true }).fill("formatTask");
   await page.getByRole("button", { name: "Fit graph", exact: true }).click();
   await page.keyboard.down("Control");
   await page.mouse.click(center.x, center.y);
   await page.keyboard.up("Control");
   assert(await page.getByRole("button", { name: "Send 2 nodes to canvas", exact: true }).isEnabled(), "Ctrl-click preserves multi-selection across graph filters");
   await page.getByRole("button", { name: "Clear selection", exact: true }).click();
-  await page.getByPlaceholder("name or path").fill("");
+  await page.getByLabel("Search", { exact: true }).fill("");
   await page.getByLabel("classes", { exact: true }).uncheck();
-  assert((await page.locator(".graph-help").innerText()).startsWith("14 visible"), "node-kind filters hide graph nodes");
+  assert((await page.locator(".graph-help").innerText()).startsWith("17 visible"), "node-kind filters hide graph nodes");
   await page.getByLabel("classes", { exact: true }).check();
   await page.getByLabel("Community", { exact: true }).selectOption("0");
   assert((await page.locator(".graph-help").innerText()).startsWith("3 visible"), "community filter isolates the Markdown cluster");
@@ -168,9 +170,9 @@ try {
   await page.screenshot({ path: "artifacts/sourcebeta-canvas.png" });
 
   await page.getByRole("button", { name: "Graph", exact: true }).click();
-  await page.getByPlaceholder("name or path").fill("no-node-matches-this");
+  await page.getByLabel("Search", { exact: true }).fill("no-node-matches-this");
   await page.getByText("No nodes match these filters.").waitFor();
-  await page.getByPlaceholder("name or path").fill("");
+  await page.getByLabel("Search", { exact: true }).fill("");
 
   await page.reload({ waitUntil: "networkidle" });
   await page.getByRole("button", { name: "Canvas", exact: true }).click();
@@ -221,12 +223,13 @@ try {
   await page.waitForFunction(() => document.querySelector(".stats")?.textContent.includes("6000 nodes"));
   await page.waitForFunction(() => document.querySelector(".graph-view canvas")?.dataset.layoutState === "settled", undefined, { timeout: 30000 });
   console.log(`Large graph: 6000 nodes / 12000 edges settled in ${Date.now() - started} ms.`);
-  await page.getByPlaceholder("name or path").fill("module-5999");
+  await page.getByLabel("Search", { exact: true }).fill("module-5999");
   await page.getByRole("button", { name: "Fit graph", exact: true }).click();
   const largeBox = await graphCanvas.boundingBox();
   await page.mouse.click(largeBox.x + largeBox.width / 2, largeBox.y + largeBox.height / 2);
   assert((await page.locator(".details h2").innerText()) === "module-5999", "large graphs settle and remain interactive after filtering");
-  await page.getByPlaceholder("name or path").fill("");
+  assert((await page.getByLabel("Filter targets", { exact: true }).count()) === 1 && (await page.locator(".details select option").count()) <= 41, "large graphs bound the path target list");
+  await page.getByLabel("Search", { exact: true }).fill("");
   await page.getByRole("button", { name: "Fit graph", exact: true }).click();
   await page.screenshot({ path: "artifacts/sourcebeta-large-graph.png" });
   assert(!requests.some((url) => /node_modules.*(excalidraw|react-force-graph|graphology)/i.test(url)), "no embedded canvas or graph runtime is loaded");

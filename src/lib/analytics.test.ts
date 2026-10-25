@@ -17,10 +17,73 @@ const chain: KnowledgeGraph = {
 };
 
 describe("analytics", () => {
-  it("computes degree and god nodes", () => {
+  it("computes degree and PageRank importance", () => {
     const analytics = computeAnalytics(chain);
     expect(analytics.degree.get("b")).toBe(2);
-    expect(analytics.godNodes[0]).toBe("b");
+    expect(analytics.rank.get("c")!).toBeGreaterThan(analytics.rank.get("b")!);
+    expect(analytics.rank.get("b")!).toBeGreaterThan(analytics.rank.get("a")!);
+    expect(analytics.godNodes.slice(0, 3)).toEqual(["c", "b", "a"]);
+    expect(analytics.cycle.size).toBe(0);
+  });
+
+  it("finds dependency cycles with an iterative strongly connected components pass", () => {
+    const cyclic: KnowledgeGraph = {
+      nodes: "abcdef".split("").map((id) => ({ id, label: id, file: id, kind: "file" })),
+      edges: [
+        { source: "a", target: "b", type: "imports", confidence: "EXTRACTED" },
+        { source: "b", target: "c", type: "imports", confidence: "EXTRACTED" },
+        { source: "c", target: "a", type: "imports", confidence: "EXTRACTED" },
+        { source: "d", target: "e", type: "imports", confidence: "EXTRACTED" },
+        { source: "e", target: "d", type: "imports", confidence: "EXTRACTED" },
+        { source: "f", target: "f", type: "contains", confidence: "EXTRACTED" },
+      ],
+    };
+    const analytics = computeAnalytics(cyclic);
+    expect([...analytics.cycle.entries()].sort()).toEqual([
+      ["a", 3], ["b", 3], ["c", 3], ["d", 2], ["e", 2],
+    ]);
+  });
+
+  it("does not let contains edges or self loops create cycles", () => {
+    const analytics = computeAnalytics({
+      nodes: chain.nodes,
+      edges: [
+        { source: "a", target: "b", type: "contains", confidence: "EXTRACTED" },
+        { source: "b", target: "a", type: "contains", confidence: "EXTRACTED" },
+        { source: "c", target: "c", type: "imports", confidence: "EXTRACTED" },
+      ],
+    });
+    expect(analytics.cycle.size).toBe(0);
+  });
+
+  it("finds shortest paths through the smaller frontier and ignores longer detours", () => {
+    const graph: KnowledgeGraph = {
+      nodes: "abcdefgh".split("").map((id) => ({ id, label: id, file: id, kind: "file" })),
+      edges: [
+        ["a", "b"], ["b", "c"], ["c", "d"], ["d", "e"],
+        ["a", "f"], ["f", "g"], ["g", "e"],
+        ["b", "g"], ["h", "h"],
+      ].map(([source, target]) => ({ source, target, type: "imports" as const, confidence: "EXTRACTED" as const })),
+    };
+    const path = shortestPath(graph, "a", "e");
+    expect(path).toHaveLength(4);
+    expect(path).toEqual(["a", "b", "g", "e"]);
+    expect(shortestPath(graph, "a", "h")).toBeNull();
+  });
+
+  it("handles long chains and rings without recursion limits", () => {
+    const size = 6000;
+    const ids = Array.from({ length: size }, (_, index) => `n${index}`);
+    const nodes = ids.map((id) => ({ id, label: id, file: id, kind: "file" as const }));
+    const chainEdges = ids.slice(1).map((id, index) => ({ source: ids[index], target: id, type: "imports" as const, confidence: "EXTRACTED" as const }));
+    const line = computeAnalytics({ nodes, edges: chainEdges });
+    expect(line.cycle.size).toBe(0);
+    expect(shortestPath({ nodes, edges: chainEdges }, "n0", `n${size - 1}`)).toHaveLength(size);
+
+    const ringEdges = [...chainEdges, { source: ids[size - 1], target: ids[0], type: "imports" as const, confidence: "EXTRACTED" as const }];
+    const ring = computeAnalytics({ nodes, edges: ringEdges });
+    expect(ring.cycle.size).toBe(size);
+    expect(ring.cycle.get("n0")).toBe(size);
   });
 
   it("finds neighborhoods in both directions", () => {
