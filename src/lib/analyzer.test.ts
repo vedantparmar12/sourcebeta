@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { analyzeProject } from "./analyzer";
 import { DEMO_FILES } from "./demo";
 
@@ -179,5 +179,24 @@ class Service { a() { return this.b(); } b() {} }` }]);
     expect(graph.edges).toContainEqual({ source: "note:notes/README.md", target: "note:notes/design.md", type: "links", confidence: "EXTRACTED" });
     expect(graph.sources?.["notes/README.md"]).toBe(content);
     expect(graph.nodes.find(node => node.id === "note:notes/README.md")).toMatchObject({ startLine: 1, endLine: 5 });
+  });
+
+  it("keeps valid files and reports a file whose language analyzer fails", async () => {
+    vi.doMock("./java", () => ({ analyzeJava: () => { throw new Error("Parser failure"); } }));
+    vi.resetModules();
+    try {
+      const { analyzeProject: analyzeWithFailure } = await import("./analyzer");
+      const graph = analyzeWithFailure([
+        { path: "a.java", content: "class Broken {}" },
+        { path: "valid.ts", content: "export function valid() { return 1; }" },
+      ]);
+      expect(graph.warnings).toEqual(["a.java"]);
+      expect(graph.nodes.some(node => node.id === "a.java" && node.kind === "file")).toBe(true);
+      expect(graph.nodes.some(node => node.id === "valid.ts#valid" && node.kind === "function")).toBe(true);
+      expect(graph.edges).toContainEqual({ source: "valid.ts", target: "valid.ts#valid", type: "contains", confidence: "EXTRACTED" });
+    } finally {
+      vi.doUnmock("./java");
+      vi.resetModules();
+    }
   });
 });

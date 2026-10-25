@@ -23,6 +23,7 @@ export interface KnowledgeGraph {
   nodes: GraphNode[];
   edges: GraphEdge[];
   sources?: Record<string, string>;
+  warnings?: string[];
 }
 
 export interface SourceFileInput {

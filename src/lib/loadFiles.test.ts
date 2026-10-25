@@ -31,4 +31,23 @@ describe("readProjectFromInput", () => {
     expect(scan.files).toHaveLength(MAX_FILES);
     expect(scan.truncated).toBe(true);
   });
+
+  it("keeps readable files when another file cannot be read", async () => {
+    const unreadable = file("secret", "broken.ts", "project/broken.ts");
+    Object.defineProperty(unreadable, "text", { value: () => Promise.reject(new Error("Permission denied")) });
+    const scan = await readProjectFromInput(fileList([
+      unreadable,
+      file("export const valid = 1;", "valid.ts", "project/valid.ts"),
+    ]));
+    expect(scan.files).toEqual([{ path: "valid.ts", content: "export const valid = 1;" }]);
+    expect(scan.skippedUnreadable).toBe(1);
+  });
+
+  it("rejects aborted scans instead of returning a partial graph", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    await expect(readProjectFromInput(fileList([
+      file("export const a = 1;", "a.ts", "project/a.ts"),
+    ]), controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+  });
 });

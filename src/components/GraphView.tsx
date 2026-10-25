@@ -228,8 +228,39 @@ export function GraphView({ graph, analytics, visibleIds, selected, activeId, on
       else if (event.key === "Escape") latest.current.onBackground();
       else if (event.key.startsWith("Arrow")) {
         autoFit = false;
-        camera.x += event.key === "ArrowLeft" ? 40 : event.key === "ArrowRight" ? -40 : 0;
-        camera.y += event.key === "ArrowUp" ? 40 : event.key === "ArrowDown" ? -40 : 0;
+        if (event.shiftKey) {
+          camera.x += event.key === "ArrowLeft" ? 40 : event.key === "ArrowRight" ? -40 : 0;
+          camera.y += event.key === "ArrowUp" ? 40 : event.key === "ArrowDown" ? -40 : 0;
+        } else {
+          const nodes = layout.nodes.filter((node) => latest.current.visibleIds.has(node.id));
+          const current = nodes.find((node) => node.id === latest.current.activeId);
+          let next: LayoutNode | undefined;
+          if (!current) {
+            next = [...nodes].sort((a, b) => a.y - b.y || a.x - b.x || a.id.localeCompare(b.id))[0];
+          } else {
+            const horizontal = event.key === "ArrowLeft" || event.key === "ArrowRight";
+            const direction = event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 1;
+            let bestScore = Infinity;
+            for (const node of nodes) {
+              const dx = node.x - current.x;
+              const dy = node.y - current.y;
+              const primary = (horizontal ? dx : dy) * direction;
+              if (primary <= 0) continue;
+              const score = primary + Math.abs(horizontal ? dy : dx) * 2;
+              if (score < bestScore || (score === bestScore && node.id < (next?.id ?? ""))) {
+                next = node;
+                bestScore = score;
+              }
+            }
+          }
+          if (next) {
+            latest.current.onSelect(next.id, false);
+            const x = next.x * camera.scale + camera.x;
+            const y = next.y * camera.scale + camera.y;
+            if (x < 48 || x > width - 48) camera.x += width / 2 - x;
+            if (y < 48 || y > height - 48) camera.y += height / 2 - y;
+          }
+        }
       } else return;
       event.preventDefault(); schedule();
     };
@@ -262,7 +293,7 @@ export function GraphView({ graph, analytics, visibleIds, selected, activeId, on
       <button aria-label="Zoom in graph" onClick={() => controls.current?.zoom(1.25)}>+</button>
       <button onClick={() => controls.current?.fit()}>Fit graph</button>
     </div>
-    <p id="graph-help" className="graph-help">{visibleIds.size} visible nodes · drag background to pan · F to fit</p>
+    <p id="graph-help" className="graph-help">{visibleIds.size} visible nodes · arrows select nodes · Shift+arrows pan · F to fit</p>
     {tooltip && <div role="tooltip" className="graph-tooltip" style={{ left: tooltip.x, top: tooltip.y }}><strong>{tooltip.node.label}</strong><span>{tooltip.node.kind} · {tooltip.node.file}{tooltip.node.line ? `:${tooltip.node.line}` : ""}</span></div>}
   </div>;
 }

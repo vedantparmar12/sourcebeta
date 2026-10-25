@@ -23,7 +23,7 @@ const gesture = async (from, to) => {
 };
 
 try {
-  await page.goto(baseUrl, { waitUntil: "networkidle" });
+  await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
   await page.getByRole("button", { name: /store\.ts/ }).waitFor();
   assert((await page.locator(".stats").innerText()).includes("18 nodes"), "demo graph loads with stats");
   const graphCanvas = page.getByRole("application", { name: "Sourcebeta code graph", exact: true });
@@ -35,6 +35,12 @@ try {
     return colored;
   });
   assert(coloredPixels > 100, "custom Canvas2D renderer paints colored graph nodes");
+  await graphCanvas.press("ArrowRight");
+  const keyboardNode = await page.locator(".details h2").innerText();
+  assert(keyboardNode !== "Select a node", "arrow keys select a visible graph node without a pointer");
+  await graphCanvas.press("ArrowLeft");
+  assert((await page.locator(".details h2").innerText()) !== keyboardNode, "directional keyboard navigation moves between graph nodes");
+  await graphCanvas.press("Escape");
   await page.getByLabel("functions", { exact: true }).uncheck();
   await page.getByLabel("Search", { exact: true }).fill("TaskStore");
   await page.getByRole("button", { name: "Fit graph", exact: true }).click();
@@ -174,7 +180,7 @@ try {
   await page.getByText("No nodes match these filters.").waitFor();
   await page.getByLabel("Search", { exact: true }).fill("");
 
-  await page.reload({ waitUntil: "networkidle" });
+  await page.reload({ waitUntil: "domcontentloaded" });
   await page.getByRole("button", { name: "Canvas", exact: true }).click();
   const blank = await surface.boundingBox();
   await page.getByRole("button", { name: "Fit board", exact: true }).click();
@@ -208,18 +214,38 @@ try {
   assert(await count() === 0, "keyboard redo reapplies deletion");
 
   await page.route("**/libraries/cloud.excalidrawlib", (route) => route.fulfill({ status: 200, contentType: "application/json", body: "{}" }));
-  await page.reload({ waitUntil: "networkidle" });
+  await page.reload({ waitUntil: "domcontentloaded" });
   await page.getByRole("button", { name: "Canvas", exact: true }).click();
   await page.getByRole("button", { name: "Cloud library", exact: true }).click();
   await page.getByRole("alert").filter({ hasText: "does not contain symbol groups" }).waitFor();
   assert(await surface.isVisible(), "malformed Cloud data reports an error without crashing the editor");
+  const warningGraph = {
+    nodes: [{ id: "src/broken.rs", label: "broken.rs", kind: "file", file: "src/broken.rs" }],
+    edges: [],
+    warnings: ["src/broken.rs"],
+  };
+  let releaseProject;
+  const blockedProject = new Promise((resolve) => { releaseProject = resolve; });
+  await page.route("**/api/sourcebeta/project", async (route) => {
+    await blockedProject;
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ name: "Cancelled project", graph: warningGraph }) }).catch(() => {});
+  });
+  await page.goto(`${baseUrl}/?project=1`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  releaseProject();
+  await page.waitForTimeout(100);
+  assert((await page.locator(".stats").innerText()).includes("0 nodes") && (await page.getByRole("button", { name: "Cancel", exact: true }).count()) === 0, "cancelling a project request ignores its stale response");
+  await page.route("**/api/sourcebeta/project", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ name: "Partial analysis test", graph: warningGraph }) }));
+  await page.goto(`${baseUrl}/?project=1`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("status").filter({ hasText: "Partial analysis: 1 file could not be analyzed (src/broken.rs)" }).waitFor();
+  assert((await page.locator(".stats").innerText()).includes("1 nodes"), "partial analysis keeps available file nodes and explains missing symbols");
   const largeGraph = {
     nodes: Array.from({ length: 6000 }, (_, index) => ({ id: `large-${index}`, label: `module-${index}`, kind: "file", file: `src/module-${index}.ts` })),
     edges: Array.from({ length: 12000 }, (_, index) => ({ source: `large-${index % 6000}`, target: `large-${(index + (index < 6000 ? 1 : 17)) % 6000}`, type: "imports", confidence: index % 5 ? "EXTRACTED" : "INFERRED" })),
   };
   await page.route("**/api/sourcebeta/project", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ name: "Large graph test", graph: largeGraph }) }));
   const started = Date.now();
-  await page.goto(`${baseUrl}/?project=1`, { waitUntil: "networkidle" });
+  await page.goto(`${baseUrl}/?project=1`, { waitUntil: "domcontentloaded" });
   await page.waitForFunction(() => document.querySelector(".stats")?.textContent.includes("6000 nodes"));
   await page.waitForFunction(() => document.querySelector(".graph-view canvas")?.dataset.layoutState === "settled", undefined, { timeout: 30000 });
   console.log(`Large graph: 6000 nodes / 12000 edges settled in ${Date.now() - started} ms.`);

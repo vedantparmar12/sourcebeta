@@ -154,6 +154,7 @@ export function analyzeProject(files: SourceFileInput[]): KnowledgeGraph {
   const namespaces = new Map<string, string[]>();
   const fileNamespace = new Map<string, string>();
   const returnTypes = new Map<string, string>();
+  const warnings: string[] = [];
   const noteIdByTitle = new Map<string, string>();
   const pendingLinks: { source: string; title: string }[] = [];
 
@@ -176,12 +177,18 @@ export function analyzeProject(files: SourceFileInput[]): KnowledgeGraph {
       continue;
     }
     nodes.push({ id: path, label: path.slice(path.lastIndexOf("/") + 1), kind: "file", file: path, line: 1, startLine: 1, endLine });
-    const result = PYTHON_EXTENSIONS.includes(ext) ? analyzePython(path, input.content, known)
-      : JAVA_EXTENSIONS.includes(ext) ? analyzeJava(path, input.content, known)
-        : RUST_EXTENSIONS.includes(ext) ? analyzeRust(path, input.content, known)
-          : GO_EXTENSIONS.includes(ext) ? analyzeGo(path, input.content, known)
-            : C_EXTENSIONS.includes(ext) ? analyzeCpp(path, input.content, known)
-              : analyzeTypescript(path, input.content, known);
+    let result: FileAnalysis;
+    try {
+      result = PYTHON_EXTENSIONS.includes(ext) ? analyzePython(path, input.content, known)
+        : JAVA_EXTENSIONS.includes(ext) ? analyzeJava(path, input.content, known)
+          : RUST_EXTENSIONS.includes(ext) ? analyzeRust(path, input.content, known)
+            : GO_EXTENSIONS.includes(ext) ? analyzeGo(path, input.content, known)
+              : C_EXTENSIONS.includes(ext) ? analyzeCpp(path, input.content, known)
+                : analyzeTypescript(path, input.content, known);
+    } catch {
+      warnings.push(path);
+      continue;
+    }
     edges.push(...result.edges);
     for (const binding of result.imports) {
       const key = `${binding.scope}\0${binding.alias}`;
@@ -303,5 +310,10 @@ export function analyzeProject(files: SourceFileInput[]): KnowledgeGraph {
     const key = `${edge.source}|${edge.target}|${edge.type}`;
     if (!uniqueEdges.has(key) || edge.confidence === "EXTRACTED") uniqueEdges.set(key, edge);
   }
-  return { nodes: [...new Map(nodes.map(node => [node.id, node])).values()], edges: [...uniqueEdges.values()], sources };
+  return {
+    nodes: [...new Map(nodes.map(node => [node.id, node])).values()],
+    edges: [...uniqueEdges.values()],
+    sources,
+    ...(warnings.length ? { warnings } : {}),
+  };
 }

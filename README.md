@@ -111,7 +111,7 @@ flowchart TD
 
 The graph simulation and painting run through `requestAnimationFrame` rather than React state updates on every simulation tick. Spatial sampling bounds repulsion work, and the simulation stops after settling or its tick limit.
 
-The TypeScript compiler, Lezer grammars, and analyzer are code-split into a separate chunk and imported only when a folder or the demo is analyzed. Precomputed project views (`?project=1`) do not download that chunk. The current production shell is about 270 kB before gzip; the lazy analyzer chunk is about 3.9 MB (1.13 MB gzip), dominated by the TypeScript compiler.
+The TypeScript compiler, Lezer grammars, and analyzer run in a module Web Worker, separate from the UI thread. Precomputed project views (`?project=1`) do not download that worker. The current production shell is about 270 kB before gzip; the analyzer worker is about 3.9 MB before gzip, dominated by the TypeScript compiler. Starting another scan or choosing **Cancel** terminates the active worker, and request generations prevent stale results from replacing a newer project.
 
 `App.tsx` memoizes analytics, connection details, and shortest paths. `BoardShape` uses React's `memo`, including recursive artwork rendering. Its scene-array prop still changes when the scene is edited, so this wrapper does not eliminate all drag-time renders; bound arrows must update when their endpoint shapes move.
 
@@ -178,7 +178,8 @@ The graph is navigation assistance, not proof of runtime behavior. Claude still 
 
 - Supported extensions: `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.py`, `.pyi`, `.java`, `.rs`, `.go`, `.c`, `.h`, `.cc`, `.cpp`, `.cxx`, `.hpp`, `.hh`, `.hxx`, `.md`, and `.markdown`. Other languages are not indexed.
 - Folder loading and the skill launcher accept at most 2,000 supported files and skip files larger than 1,000,000 bytes. They ignore common dependency, build, VCS, Python cache, and virtual-environment directories.
-- The app reports when the limit or size cap omits files; the launcher prints the same warnings. Source is complete only for files accepted by that scan.
+- The app reports file-cap, size-cap, unreadable-file, and per-file analyzer failures as partial-result warnings. Valid files remain available; a failed file keeps its file node and source but loses its symbols and edges. The launcher prints scan-limit warnings. Source is complete only for files accepted and analyzed by that scan.
+- Focus the graph and use arrow keys to move between visible nodes; Shift+Arrow pans, F or Home fits, +/− zooms, and Escape clears the active details.
 - Symbol discovery recursively includes functions, classes, methods, nested definitions, callbacks, wrapped functions, closures, and lambdas. Java records/annotations, Rust structs/enums/traits/impls, Go named types and receiver methods, C/C++ namespaces and out-of-line methods are included. C/C++ prototypes merge with matching definitions; TypeScript overloads share a symbol; repeated Python definitions retain separate IDs. Syntax unsupported by the parsers may be incomplete.
 - Selected symbols show numbered source ranges, including decorators; **Whole file** shows all lines. Lines are text, not individual graph nodes. Comments, imports, and other non-symbol statements remain accessible in file source.
 - TypeScript resolves relative local imports, not package aliases. Python resolves local modules/packages, relative imports, and conventional `src` roots. Java resolves packages, static/wildcard imports, and common `src/main/java` roots. Rust resolves `crate`/`self`/`super`, `mod`, and nested `use` trees. Go resolves package directories by unique import-path suffix, dot imports, same-package files, and package-level constructor return types. C/C++ resolves quoted includes by relative path or unique suffix. Re-export forwarding and arbitrary import-path configuration are not fully resolved.
@@ -186,7 +187,7 @@ The graph is navigation assistance, not proof of runtime behavior. Claude still 
 - Markdown connects `[[wikilinks]]` and simple inline local Markdown file links. Reference-style links, encoded paths, and full Markdown semantics are not supported.
 - Analysis runs locally and does not upload project files to an external service. The graph carries source text once per file; precomputed caches also contain it.
 - The project endpoint accepts only loopback GET requests and sends `no-store`/`nosniff` headers. On POSIX, the skill creates its temporary source cache with user-only permissions. Keep development servers on loopback and do not copy or publish caches.
-- The lazy parser/analyzer chunk is still large because it bundles the TypeScript compiler, so the production build emits a large-chunk warning for it. This affects analyzer startup, not the initial shell or precomputed project views.
+- The analyzer worker is still large because it bundles the TypeScript compiler. This affects analyzer startup, not UI responsiveness, the initial shell, or precomputed project views.
 
 ## Development and verification
 

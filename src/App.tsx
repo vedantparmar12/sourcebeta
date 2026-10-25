@@ -19,9 +19,18 @@ const PROJECT_QUERY = new URLSearchParams(window.location.search).has("project")
 
 function scanNotice(scan: ProjectScan): string {
   const notes: string[] = [];
-  if (scan.truncated) notes.push(`Scan stopped at ${MAX_FILES.toLocaleString()} files; additional supported files were omitted.`);
+  if (scan.truncated) notes.push(`Partial scan: stopped at ${MAX_FILES.toLocaleString()} files; additional supported files were omitted.`);
   if (scan.skippedLarge > 0) notes.push(`Skipped ${scan.skippedLarge} file${scan.skippedLarge === 1 ? "" : "s"} larger than ${MAX_FILE_BYTES / 1_000_000} MB.`);
+  if (scan.skippedUnreadable > 0) notes.push(`Skipped ${scan.skippedUnreadable} unreadable file${scan.skippedUnreadable === 1 ? "" : "s"}; the graph is incomplete.`);
   return notes.join(" ");
+}
+
+function analysisNotice(graph: KnowledgeGraph): string {
+  const warnings = graph.warnings ?? [];
+  if (!warnings.length) return "";
+  const paths = warnings.slice(0, 3).join(", ");
+  const remainder = warnings.length > 3 ? ` and ${warnings.length - 3} more` : "";
+  return `Partial analysis: ${warnings.length} file${warnings.length === 1 ? "" : "s"} could not be analyzed (${paths}${remainder}). File nodes remain, but their symbols and edges are missing.`;
 }
 
 export default function App() {
@@ -46,6 +55,8 @@ export default function App() {
   const [fitKey, setFitKey] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const graphRequest = useRef(0);
+  const analysisWorker = useRef<Worker | null>(null);
+  const scanController = useRef<AbortController | null>(null);
 
   const graph = projectGraph ?? analyzedGraph ?? EMPTY_GRAPH;
   const analytics = useMemo(() => computeAnalytics(graph), [graph]);
@@ -93,42 +104,45 @@ export default function App() {
     };
   }, [graph, activeNode, pathQuery, analytics]);
 
+  const cancelWork = () => {
+    graphRequest.current += 1;
+    scanController.current?.abort();
+    scanController.current = null;
+    analysisWorker.current?.terminate();
+    analysisWorker.current = null;
+    setBusy("");
+  };
+
   useEffect(() => {
-    const request = ++graphRequest.current;
-    let active = true;
-    if (PROJECT_QUERY) {
-      fetch("/api/sourcebeta/project")
-        .then(async (response) => {
-          if (!response.ok) throw new Error(await response.text());
-          return response.json() as Promise<{ name: string; graph: KnowledgeGraph }>;
-        })
-        .then((project) => {
-          if (!active || request !== graphRequest.current) return;
-          setProjectName(project.name);
-          setProjectGraph(project.graph);
-        })
-        .catch((cause: Error) => {
-          if (active && request === graphRequest.current) setError(`Could not load project graph: ${cause.message}`);
-        })
-        .finally(() => {
-          if (active && request === graphRequest.current) setBusy("");
-        });
-    } else {
-      import("./lib/analyzer")
-        .then(({ analyzeProject }) => {
-          if (!active || request !== graphRequest.current) return;
-          setAnalyzedGraph(analyzeProject(DEMO_FILES));
-        })
-        .catch((cause: Error) => {
-          if (active && request === graphRequest.current) setError(`Could not load the source analyzer: ${cause.message}`);
-        })
-        .finally(() => {
-          if (active && request === graphRequest.current) setBusy("");
-        });
+    if (!PROJECT_QUERY) {
+      loadFiles(DEMO_FILES);
+      return () => {
+        graphRequest.current += 1;
+        analysisWorker.current?.terminate();
+      };
     }
-    return () => {
-      active = false;
-    };
+    const request = ++graphRequest.current;
+    const controller = new AbortController();
+    scanController.current = controller;
+    fetch("/api/sourcebeta/project", { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(await response.text());
+        return response.json() as Promise<{ name: string; graph: KnowledgeGraph }>;
+      })
+      .then((project) => {
+        if (request !== graphRequest.current) return;
+        setProjectName(project.name);
+        setProjectGraph(project.graph);
+        setNotice(analysisNotice(project.graph));
+      })
+      .catch((cause: Error) => {
+        if (cause.name !== "AbortError" && request === graphRequest.current) setError(`Could not load project graph: ${cause.message}`);
+      })
+      .finally(() => {
+        if (scanController.current === controller) scanController.current = null;
+        if (request === graphRequest.current) setBusy("");
+      });
+    return () => controller.abort();
   }, []);
 
   const selectNode = (id: string, additive: boolean) => {
@@ -142,8 +156,9 @@ export default function App() {
     });
   };
 
-  const loadFiles = (next: SourceFileInput[]) => {
-    const request = ++graphRequest.current;
+  function loadFiles(next: SourceFileInput[]) {
+    cancelWork();
+    const request = graphRequest.current;
     setAnalyzedGraph(null);
     setProjectGraph(null);
     setProjectName("");
@@ -156,20 +171,47 @@ export default function App() {
     setError("");
     setNotice("");
     setBusy("Analyzing source files…");
-    import("./lib/analyzer")
-      .then(({ analyzeProject }) => {
-        if (request !== graphRequest.current) return;
-        setAnalyzedGraph(analyzeProject(next));
-      })
-      .catch((cause: Error) => {
-        if (request === graphRequest.current) setError(`Could not analyze source files: ${cause.message}`);
-      })
-      .finally(() => {
-        if (request === graphRequest.current) setBusy("");
-      });
-  };
+    try {
+      const worker = new Worker(new URL("./lib/analyzer.worker.ts", import.meta.url), { type: "module" });
+      analysisWorker.current = worker;
+      const finish = () => {
+        worker.terminate();
+        if (analysisWorker.current === worker) analysisWorker.current = null;
+      };
+      worker.onmessage = (event: MessageEvent<{ graph: KnowledgeGraph } | { error: string }>) => {
+        if (request === graphRequest.current) {
+          if ("error" in event.data) setError(`Could not analyze source files: ${event.data.error}`);
+          else {
+            setAnalyzedGraph(event.data.graph);
+            const warning = analysisNotice(event.data.graph);
+            if (warning) setNotice((previous) => [previous, warning].filter(Boolean).join(" "));
+          }
+          setBusy("");
+        }
+        finish();
+      };
+      worker.onerror = (event: ErrorEvent) => {
+        event.preventDefault();
+        if (request === graphRequest.current) {
+          setError(`Could not analyze source files: ${event.message || "the analyzer worker failed"}`);
+          setBusy("");
+        }
+        finish();
+      };
+      worker.postMessage({ files: next });
+    } catch (cause) {
+      if (request === graphRequest.current) {
+        setError(`Could not start source analysis: ${(cause as Error).message}`);
+        setBusy("");
+      }
+    }
+  }
 
   const openFolder = async () => {
+    cancelWork();
+    const request = graphRequest.current;
+    const controller = new AbortController();
+    scanController.current = controller;
     setError("");
     setNotice("");
     try {
@@ -177,8 +219,8 @@ export default function App() {
         inputRef.current?.click();
         return;
       }
-      const scan = await pickProjectFromDirectory();
-      if (!scan) return;
+      const scan = await pickProjectFromDirectory(controller.signal);
+      if (!scan || request !== graphRequest.current) return;
       if (scan.files.length === 0) {
         setError(NO_FILES);
         return;
@@ -186,7 +228,9 @@ export default function App() {
       loadFiles(scan.files);
       setNotice(scanNotice(scan));
     } catch (cause) {
-      if ((cause as Error).name !== "AbortError") setError((cause as Error).message);
+      if ((cause as Error).name !== "AbortError" && request === graphRequest.current) setError((cause as Error).message);
+    } finally {
+      if (scanController.current === controller) scanController.current = null;
     }
   };
 
@@ -208,6 +252,7 @@ export default function App() {
         </div>
         <button onClick={openFolder}>Open folder</button>
         <button onClick={() => loadFiles(DEMO_FILES)}>Demo project</button>
+        {busy && <button onClick={cancelWork}>Cancel</button>}
         <nav className="tabs">
           <button className={view === "graph" ? "tab active" : "tab"} onClick={() => setView("graph")}>Graph</button>
           <button className={view === "canvas" ? "tab active" : "tab"} onClick={() => setView("canvas")}>Canvas</button>
@@ -223,19 +268,31 @@ export default function App() {
         onChange={async (event) => {
           const list = event.target.files;
           if (list && list.length > 0) {
+            cancelWork();
+            const request = graphRequest.current;
+            const controller = new AbortController();
+            scanController.current = controller;
             setError("");
-            const scan = await readProjectFromInput(list);
-            if (scan.files.length === 0) setError(NO_FILES);
-            else {
-              loadFiles(scan.files);
-              setNotice(scanNotice(scan));
+            setNotice("");
+            try {
+              const scan = await readProjectFromInput(list, controller.signal);
+              if (request !== graphRequest.current) return;
+              if (scan.files.length === 0) setError(NO_FILES);
+              else {
+                loadFiles(scan.files);
+                setNotice(scanNotice(scan));
+              }
+            } catch (cause) {
+              if ((cause as Error).name !== "AbortError" && request === graphRequest.current) setError((cause as Error).message);
+            } finally {
+              if (scanController.current === controller) scanController.current = null;
             }
           }
           event.target.value = "";
         }}
       />
-      {error && <div className="error">{error}</div>}
-      {notice && <div className="notice">{notice}</div>}
+      {error && <div role="alert" className="error">{error}</div>}
+      {notice && <div role="status" className="notice">{notice}</div>}
 
       {view === "graph" ? (
         <div className="workspace">
@@ -297,7 +354,7 @@ export default function App() {
           </aside>
 
           <main className="stage">
-            {busy ? <p className="empty">{busy}</p> : visibleIds.size === 0 ? <p className="empty">No nodes match these filters.</p> : null}
+            {busy ? <p role="status" className="empty">{busy}</p> : visibleIds.size === 0 ? <p className="empty">No nodes match these filters.</p> : null}
             <GraphView
               graph={graph}
               analytics={analytics}
