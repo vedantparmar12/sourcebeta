@@ -83,7 +83,7 @@ flowchart TD
     Cloud[Bundled Cloud artwork] --> Scene
     Scene --> SVG[Native SVG whiteboard]
     SVG --> Export[SVG or PNG export]
-    Helper[Optional external Sourcebeta skill] -.-> Payload[Local precomputed graph JSON]
+    Helper[Bundled Sourcebeta skill] -.-> Payload[Local precomputed graph JSON]
     Payload -.-> API[Vite development middleware]
     API -.-> Graph
 ```
@@ -109,26 +109,64 @@ The graph simulation and painting run through `requestAnimationFrame` rather tha
 
 `App.tsx` memoizes graph analysis, connection details, and shortest paths. `BoardShape` uses React's `memo`, including recursive artwork rendering. Its scene-array prop still changes when the scene is edited, so this wrapper does not eliminate all drag-time renders; bound arrows must update when their endpoint shapes move.
 
-## Optional agent workflow
+## Claude Code skill
 
-The separately installed user-level **Sourcebeta skill** can scan another project, print focused graph context, and launch this app against a precomputed graph. The skill and its launcher are **not bundled in this repository**; the folder-picker workflow above works without them.
+The repository includes a Claude Code skill at `.claude/skills/sourcebeta/SKILL.md` and a portable Bun launcher beside it. It gives Claude a graph-guided problem-solving workflow without Graphify or an MCP server: find related files and callers, confirm behavior in source, make a minimal change, and verify it with tests.
 
-If the skill is already installed, these examples work in Bash/Git Bash from the repository root:
+### Use in this repository
+
+Run `bun install --frozen-lockfile`, then start Claude Code in the Sourcebeta checkout. Claude discovers the project skill and can use it when its description matches the task. Invoke it explicitly with, for example:
+
+```text
+/sourcebeta Trace how arrowPoints keeps connectors attached to moved cards.
+/sourcebeta Investigate graph selection in GraphView.tsx and identify relevant tests.
+/sourcebeta Open the graph for this project.
+```
+
+Use a current Claude Code version with skill-directory variable support. The skill uses `${CLAUDE_SKILL_DIR}` so script paths work independently of the shell's current directory. It does not grant additional tool permissions; Claude's normal approval rules still apply.
+
+### Use across other projects
+
+From this checkout, copy the skill to Claude Code's personal skills directory. These commands are for Bash/Git Bash:
 
 ```bash
 export SOURCEBETA_HOME="$PWD"
-
-# Analyze a project, launch a local server, and open its graph.
-bun "$HOME/.qoder/skills/sourcebeta/scripts/sourcebeta.mjs" /path/to/project
-
-# Print focused graph context without starting or opening the UI.
-bun "$HOME/.qoder/skills/sourcebeta/scripts/sourcebeta.mjs" /path/to/project \
-  --no-open --query "symbol or file name"
+mkdir -p "$HOME/.claude/skills"
+test ! -e "$HOME/.claude/skills/sourcebeta" && \
+  cp -R .claude/skills/sourcebeta "$HOME/.claude/skills/sourcebeta"
 ```
 
-Replace `/path/to/project` with the target directory. The helper uses `SOURCEBETA_HOME` to locate this app and requires its dependencies to be installed. It writes graph metadata to the operating system's temporary directory; the app loads it through `/api/sourcebeta/project` when opened with `?project=1`. That endpoint exists in the Vite development server, not the static production build.
+If that skill directory already exists, review it before replacing it; the command deliberately does not overwrite it. Keep this Sourcebeta checkout and its installed dependencies. Start Claude Code in the target project from a shell with `SOURCEBETA_HOME` set to this checkout's absolute path. Set it again in new shells, or manage it in your own shell configuration. Restart an existing Claude session if the copied skill is not discovered.
 
-For implementation work, use matching nodes to choose which files to read, verify inferred edges in source, make the smallest correct change, and run the relevant tests. The graph is navigation assistance, not proof of runtime behavior or a substitute for reading code.
+For a project-only installation elsewhere, copy the same `sourcebeta` skill folder into that project's `.claude/skills/` directory and set `SOURCEBETA_HOME` in the launching shell. The existing separately installed Qoder skill is unaffected.
+
+### Run analysis directly
+
+```bash
+# From this checkout; target any supported project.
+bun .claude/skills/sourcebeta/scripts/sourcebeta.mjs /path/to/project \
+  --query "symbol-or-file"
+
+# Start the loopback development server and open the graph only when requested.
+bun .claude/skills/sourcebeta/scripts/sourcebeta.mjs /path/to/project --open
+```
+
+Omit the target path to scan the current working directory. Queries match symbol names and paths by case-insensitive substring, not semantic search. Output includes source locations and confidence labels, capped at five key nodes, eight matches, and five connections per match; follow up with source reads/searches for complete impact analysis.
+
+Analysis alone prints a bounded summary, without opening a browser or writing a graph cache. `--open` writes graph metadata under the operating system's temporary directory, starts or reuses a localhost Vite server, and opens `?project=1`. The app loads that graph through `/api/sourcebeta/project`; this endpoint exists only in the development server. Sourcebeta does not execute the scanned project's code.
+
+```mermaid
+flowchart LR
+    Problem[User problem] --> Skill[Claude invokes Sourcebeta skill]
+    Skill --> Query[Focused local graph query]
+    Query --> Evidence[Locations, callers and dependencies]
+    Evidence --> Read[Claude reads relevant source and tests]
+    Read --> Fix[Minimal evidence-based change]
+    Fix --> Verify[Tests and browser checks when applicable]
+    Verify --> Report[Result and remaining limitations]
+```
+
+The graph is navigation assistance, not proof of runtime behavior. Claude still reasons about the problem and performs the change; Sourcebeta does not guarantee a correct fix or measured token savings.
 
 ## Limits and privacy
 
@@ -146,10 +184,11 @@ For implementation work, use matching nodes to choose which files to read, verif
 ```bash
 bun run --bun lint
 bun run --bun test
+bun scripts/skill-check.mjs
 bun run --bun build
 ```
 
-The current unit suite contains 30 tests covering the analyzer, analytics, native board geometry/artwork, and force layout.
+The current unit suite contains 30 tests covering the analyzer, analytics, native board geometry/artwork, and force layout. The skill checks validate metadata, focused output, scan limits, error cases, and using a copied skill from another project.
 
 For browser verification, install Microsoft Edge and keep the development server running in another terminal:
 
