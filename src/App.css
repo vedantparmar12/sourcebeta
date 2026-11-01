@@ -100,7 +100,7 @@ hr { border: none; border-top: 1px solid #2a2e38; margin: 14px 0; }
 .board-properties input[type="checkbox"], .board-properties select { width: auto; }
 .board-properties .hint { margin-left: auto; }
 .board-body { display: flex; flex: 1; min-height: 0; }
-.board-viewport { position: relative; min-width: 0; flex: 1; overflow: hidden; background: #16181f; }
+.board-viewport { position: relative; min-width: 0; flex: 1; overflow: hidden; background: #ffffff; }
 .board-surface { display: block; width: 100%; height: 100%; touch-action: none; user-select: none; outline: none; }
 .board-surface:focus-visible { box-shadow: inset 0 0 0 2px #8b7ff0; }
 .board-surface.tool-hand { cursor: grab; }
