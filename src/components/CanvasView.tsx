@@ -282,7 +282,7 @@ export function CanvasView({ elements, onChange, fitKey }: CanvasViewProps) {
     root.setAttribute("width", String(width)); root.setAttribute("height", String(height));
     root.setAttribute("viewBox", `${bounds.x - 40} ${bounds.y - 40} ${width} ${height}`);
     const background = document.createElementNS(root.namespaceURI, "rect");
-    for (const [key, value] of Object.entries({ x: bounds.x - 40, y: bounds.y - 40, width, height, fill: "#16181f" })) background.setAttribute(key, String(value));
+    for (const [key, value] of Object.entries({ x: bounds.x - 40, y: bounds.y - 40, width, height, fill: "#ffffff" })) background.setAttribute(key, String(value));
     root.append(background, svg.current!.querySelector(".board-content")!.cloneNode(true));
     let blob = new Blob([new XMLSerializer().serializeToString(root)], { type: "image/svg+xml" });
     if (format === "png") {
@@ -342,7 +342,7 @@ export function CanvasView({ elements, onChange, fitKey }: CanvasViewProps) {
           onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={up}
           onDoubleClick={(event) => { const id = (event.target as Element).closest("[data-element-id]")?.getAttribute("data-element-id"); const element = elements.find((item) => item.id === id); if (element && element.text !== undefined) setEditing({ id: element.id, text: element.text }); }}>
           <defs><pattern id="board-dots" patternUnits="userSpaceOnUse" width={24 * camera.zoom} height={24 * camera.zoom} x={camera.x} y={camera.y}><circle cx="1" cy="1" r="1" fill="#343745" /></pattern></defs>
-          <rect width="100%" height="100%" fill={grid ? "url(#board-dots)" : "#16181f"} />
+          <rect width="100%" height="100%" fill={grid ? "url(#board-dots)" : "#ffffff"} />
           <g transform={`translate(${camera.x} ${camera.y}) scale(${camera.zoom})`} data-camera="true">
             <g className="board-content">{elements.map((element) => <g key={element.id} data-element-id={element.id} data-kind={element.kind}><BoardShape element={element} elements={elements} /></g>)}</g>
             {elements.filter((element) => selected.has(element.id)).map((element) => {
