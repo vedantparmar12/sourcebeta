@@ -1,7 +1,7 @@
 import type { KnowledgeGraph } from "./types";
 
 export type Point = { x: number; y: number };
-export type BoardKind = "rectangle" | "ellipse" | "diamond" | "text" | "pen" | "arrow" | "card" | "symbol";
+export type BoardKind = "rectangle" | "ellipse" | "diamond" | "text" | "pen" | "arrow" | "card" | "symbol" | "container";
 export interface BoardElement {
   id: string;
   kind: BoardKind;
@@ -21,6 +21,9 @@ export interface BoardElement {
   endId?: string;
   dashed?: boolean;
   artwork?: Artwork;
+  source?: { nodeId: string; file: string; line?: number };
+  groupId?: string;
+  comment?: string;
 }
 export interface Artwork {
   name: string;
@@ -94,6 +97,7 @@ export function selectionToElements(graph: KnowledgeGraph, ids: Iterable<string>
     id: crypto.randomUUID(), kind: "card", x: (index % columns) * 310, y: offsetY + Math.floor(index / columns) * 160,
     width: 220, height: 90, stroke: node.kind === "note" ? "#e7ba63" : "#8b7ff0", fill: "#232738", strokeWidth: 2,
     text: `${node.label}\n${node.kind}`, fontSize: 16,
+    source: { nodeId: node.id, file: node.file, ...(node.line != null ? { line: node.line } : {}) },
   }));
   const byId = new Map(selected.map((node, index) => [node.id, cards[index]]));
   const arrows: BoardElement[] = [];
@@ -132,7 +136,7 @@ export function readCloudLibrary(data: unknown): Artwork[] {
         id: `cloud-${index}-${part}`, kind, x: number(item.x) + minX, y: number(item.y) + minY,
         width: points?.length ? Math.max(...points.map((point) => point.x)) - minX : number(item.width),
         height: points?.length ? Math.max(...points.map((point) => point.y)) - minY : number(item.height),
-        stroke: color(item.strokeColor, "#e9ecf2"), fill: color(item.backgroundColor, "none"),
+        stroke: color(item.strokeColor, "#343745"), fill: color(item.backgroundColor, "none"),
         strokeWidth: number(item.strokeWidth, 1), angle: number(item.angle), opacity: number(item.opacity, 100) / 100,
         text: typeof item.text === "string" ? item.text : undefined, fontSize: number(item.fontSize, 20),
         points: points?.map((point) => ({ x: point.x - minX, y: point.y - minY })),
@@ -142,6 +146,114 @@ export function readCloudLibrary(data: unknown): Artwork[] {
     return {
       name: `Cloud symbol ${index + 1}`, width: Math.max(1, bounds.width), height: Math.max(1, bounds.height),
       elements: elements.map((element) => ({ ...element, x: element.x - bounds.x, y: element.y - bounds.y })),
+    };
+  });
+}
+
+export function alignLeft(elements: BoardElement[]): BoardElement[] {
+  if (elements.length < 2) return elements;
+  const minX = Math.min(...elements.map((e) => e.x));
+  return elements.map((e) => ({ ...e, x: minX }));
+}
+
+export function alignTop(elements: BoardElement[]): BoardElement[] {
+  if (elements.length < 2) return elements;
+  const minY = Math.min(...elements.map((e) => e.y));
+  return elements.map((e) => ({ ...e, y: minY }));
+}
+
+export function distributeHorizontally(elements: BoardElement[]): BoardElement[] {
+  if (elements.length < 3) return elements;
+  const sorted = [...elements].sort((a, b) => a.x - b.x);
+  const first = sorted[0];
+  const last = sorted[sorted.length - 1];
+  const totalWidth = sorted.reduce((sum, e) => sum + e.width, 0);
+  const availableSpace = last.x + last.width - first.x - totalWidth;
+  const gap = availableSpace / (sorted.length - 1);
+  let currentX = first.x;
+  return sorted.map((e, i) => {
+    if (i === 0) return e;
+    const prev = sorted[i - 1];
+    currentX = currentX + prev.width + gap;
+    return { ...e, x: currentX };
+  });
+}
+
+export function snapToGrid(value: number, gridSize: number): number {
+  return Math.round(value / gridSize) * gridSize;
+}
+
+export function groupBounds(elements: BoardElement[]): Bounds {
+  if (elements.length === 0) return { x: 0, y: 0, width: 0, height: 0 };
+  const bounds = elements.map((e) => elementBounds(e));
+  const x = Math.min(...bounds.map((b) => b.x));
+  const y = Math.min(...bounds.map((b) => b.y));
+  return {
+    x, y,
+    width: Math.max(...bounds.map((b) => b.x + b.width)) - x,
+    height: Math.max(...bounds.map((b) => b.y + b.height)) - y,
+  };
+}
+
+export function validateBoardJSON(data: unknown): BoardElement[] {
+  if (!Array.isArray(data)) throw new Error("Board data must be an array of elements.");
+  return data.map((item, index) => {
+    if (!item || typeof item !== "object") throw new Error(`Element ${index} is not an object.`);
+    const required = ["id", "kind", "x", "y", "width", "height", "stroke", "fill", "strokeWidth"];
+    for (const key of required) {
+      if (!(key in item)) throw new Error(`Element ${index} missing required field: ${key}`);
+    }
+    if (typeof item.id !== "string") throw new Error(`Element ${index} id must be a string.`);
+    const validKinds = ["rectangle", "ellipse", "diamond", "text", "pen", "arrow", "card", "symbol", "container"];
+    if (!validKinds.includes(item.kind)) throw new Error(`Element ${index} has invalid kind: ${item.kind}`);
+    const number = (value: unknown, field: string): number => {
+      if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`Element ${index} ${field} must be a finite number.`);
+      return value;
+    };
+    const color = (value: unknown, field: string): string => {
+      if (typeof value !== "string" || !/^(#[\da-f]{3,8}|[a-z]+|none)$/i.test(value)) throw new Error(`Element ${index} ${field} must be a valid color.`);
+      return value;
+    };
+    return {
+      id: item.id,
+      kind: item.kind as BoardKind,
+      x: number(item.x, "x"),
+      y: number(item.y, "y"),
+      width: number(item.width, "width"),
+      height: number(item.height, "height"),
+      stroke: color(item.stroke, "stroke"),
+      fill: color(item.fill, "fill"),
+      strokeWidth: number(item.strokeWidth, "strokeWidth"),
+      ...(item.text != null ? { text: String(item.text) } : {}),
+      ...(item.fontSize != null ? { fontSize: number(item.fontSize, "fontSize") } : {}),
+      ...(item.angle != null ? { angle: number(item.angle, "angle") } : {}),
+      ...(item.opacity != null ? { opacity: number(item.opacity, "opacity") } : {}),
+      ...(item.dashed != null ? { dashed: Boolean(item.dashed) } : {}),
+      ...(item.startId != null ? { startId: String(item.startId) } : {}),
+      ...(item.endId != null ? { endId: String(item.endId) } : {}),
+      ...(item.groupId != null ? { groupId: String(item.groupId) } : {}),
+      ...(item.comment != null ? { comment: String(item.comment) } : {}),
+      ...(Array.isArray(item.points) ? {
+        points: item.points.map((p: unknown, pi: number) => {
+          if (!p || typeof p !== "object") throw new Error(`Element ${index} point ${pi} is invalid.`);
+          return { x: number((p as Record<string, unknown>).x, `point ${pi}.x`), y: number((p as Record<string, unknown>).y, `point ${pi}.y`) };
+        }),
+      } : {}),
+      ...(item.source && typeof item.source === "object" ? {
+        source: {
+          nodeId: String((item.source as Record<string, unknown>).nodeId ?? ""),
+          file: String((item.source as Record<string, unknown>).file ?? ""),
+          ...((item.source as Record<string, unknown>).line != null ? { line: number((item.source as Record<string, unknown>).line, "source.line") } : {}),
+        },
+      } : {}),
+      ...(item.artwork && typeof item.artwork === "object" ? {
+        artwork: {
+          name: String((item.artwork as Record<string, unknown>).name ?? "Artwork"),
+          width: number((item.artwork as Record<string, unknown>).width, "artwork.width"),
+          height: number((item.artwork as Record<string, unknown>).height, "artwork.height"),
+          elements: validateBoardJSON((item.artwork as Record<string, unknown>).elements),
+        },
+      } : {}),
     };
   });
 }

@@ -22,6 +22,8 @@ interface DirectoryHandleLike extends FileSystemEntryLike {
   values(): AsyncIterableIterator<DirectoryHandleLike | FileHandleLike>;
 }
 
+export type ProjectDirectoryHandle = DirectoryHandleLike;
+
 interface FileHandleLike extends FileSystemEntryLike {
   kind: "file";
   getFile(): Promise<File>;
@@ -31,11 +33,14 @@ export function supportsDirectoryPicker(): boolean {
   return typeof (window as unknown as { showDirectoryPicker?: unknown }).showDirectoryPicker === "function";
 }
 
-export async function pickProjectFromDirectory(signal?: AbortSignal): Promise<ProjectScan | null> {
+export async function pickProjectDirectory(): Promise<ProjectDirectoryHandle> {
   const picker = (window as unknown as {
-    showDirectoryPicker: () => Promise<DirectoryHandleLike>;
+    showDirectoryPicker: () => Promise<ProjectDirectoryHandle>;
   }).showDirectoryPicker;
-  const root = await picker();
+  return picker();
+}
+
+export async function scanProjectDirectory(root: ProjectDirectoryHandle, signal?: AbortSignal): Promise<ProjectScan> {
   const scan: ProjectScan = { files: [], truncated: false, skippedLarge: 0, skippedUnreadable: 0 };
 
   const walk = async (directory: DirectoryHandleLike, prefix: string) => {
@@ -76,6 +81,10 @@ export async function pickProjectFromDirectory(signal?: AbortSignal): Promise<Pr
   await walk(root, "");
   signal?.throwIfAborted();
   return scan;
+}
+
+export async function pickProjectFromDirectory(signal?: AbortSignal): Promise<ProjectScan> {
+  return scanProjectDirectory(await pickProjectDirectory(), signal);
 }
 
 export async function readProjectFromInput(fileList: FileList, signal?: AbortSignal): Promise<ProjectScan> {

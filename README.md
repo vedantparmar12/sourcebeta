@@ -20,11 +20,11 @@ Use a current desktop browser. Chromium-based browsers support the native direct
 ## Explore a project
 
 1. Click **Open folder** and choose the repository to inspect, or use **Demo project** to try the built-in example.
-2. Search by symbol name or file path. Filter files, functions, classes, notes, or communities.
+2. Search by symbol name or file path with substring or short fuzzy queries. Filter files, functions, classes, notes, communities, edge types, inferred relationships, cycles, or the impact of a selection.
 3. Click a node to inspect its numbered source, incoming/outgoing connections, degree, PageRank, community, and dependency-cycle membership. **Whole file** displays all the file's text; **Symbol** returns to the selected definition. Collapse **Source** to give connections more room. Ctrl/Cmd-click adds or removes nodes from the selection.
-4. Use **Select neighbors** or **Local graph around selection** to focus on a one- or two-hop neighborhood.
+4. Use **Select neighbors** or **Local graph around selection** to focus on a one- or two-hop neighborhood. Use **Rescan** to refresh a directory-backed project and its source-linked cards. **Save layout** preserves node positions in the current browser.
 5. Choose a target in **Shortest path** to see a connecting route. On larger graphs, **Filter targets** searches a bounded list instead of rendering every node. Paths and neighborhoods traverse relationships in either direction, even though graph edges retain their direction.
-6. Click **Send nodes to canvas** to create architecture cards and bound connectors from the selection.
+6. Click **Send nodes to canvas** to create architecture cards and bound connectors from the visible selection. With a Chromium directory picker, **Compare folder** highlights files changed relative to another local folder and can create a changed-file diagram.
 
 Drag a graph node to move and pin it. Drag the background to pan, scroll to zoom around the pointer, and use **Fit graph** to frame the visible nodes.
 
@@ -46,19 +46,20 @@ Node colors represent communities, and node sizes reflect degree. Community dete
 
 ## Draw on the whiteboard
 
-- Select, drag, resize, duplicate, delete, or multi-select objects.
-- Draw rectangles, ellipses, diamonds, arrows, freehand paths, and editable text.
+- Select, drag, resize, duplicate, delete, copy/paste, group, align, distribute, or multi-select objects.
+- Draw rectangles, ellipses, diamonds, containers, arrows, freehand paths, and editable text.
 - Hold Shift while drawing an ellipse to make a circle or while resizing to preserve proportions.
 - Connect shapes with arrows; bound endpoints follow the shapes when they move.
-- Adjust stroke, fill, width, and grid visibility; use undo/redo while editing.
-- Open the Cloud library to insert one of 19 bundled artwork groups.
-- Export **SVG** for vector output or **PNG** for an image.
+- Adjust stroke, fill, width, grid visibility, and snapping; use undo/redo while editing.
+- Add comments, open the Cloud library, or enter fullscreen presentation mode.
+- Double-click a source-linked code card to return to its graph node.
+- Export **SVG**, **PNG**, editable **JSON**, or a self-contained interactive **HTML** report. JSON can be imported back into the editor.
 
 Code cards include the selected graph nodes; connections between selected nodes become arrows, except `contains` and self links. Repeated handoffs append new cards without replacing the drawing.
 
 The Cloud `.excalidrawlib` file is imported artwork data. Sourcebeta converts its supported shapes into its own SVG elements; it does not load the Excalidraw editor. The artwork retains its original ownership; this repository does not grant additional rights to third-party artwork.
 
-**Persistence:** the scene survives switching between Graph and Canvas in the current page. Reloading or closing the page loses it. There is no saved-scene import, autosave, or collaborative storage; export before leaving.
+**Persistence:** named boards autosave to browser local storage and the latest board restores on reload. Use **Save as** for a named copy, **New board** for a clean scene, and JSON export for a portable backup. Storage remains local to the current browser; there is no collaborative storage. Loading a different project starts a separate clean scene rather than mixing cards between projects.
 
 ## How it works
 

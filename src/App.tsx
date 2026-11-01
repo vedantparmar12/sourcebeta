@@ -2,15 +2,17 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { GraphView } from "./components/GraphView";
 import { CanvasView } from "./components/CanvasView";
 import { SourceView } from "./components/SourceView";
-import { computeAnalytics, explainNode, neighborhood, shortestPath } from "./lib/analytics";
+import { computeAnalytics, explainNode, impactSet, neighborhood, shortestPath } from "./lib/analytics";
 import { sceneBounds, selectionToElements, type BoardElement } from "./lib/canvas";
 import { DEMO_FILES } from "./lib/demo";
-import { pickProjectFromDirectory, readProjectFromInput, supportsDirectoryPicker, type ProjectScan } from "./lib/loadFiles";
+import { pickProjectDirectory, readProjectFromInput, scanProjectDirectory, supportsDirectoryPicker, type ProjectDirectoryHandle, type ProjectScan } from "./lib/loadFiles";
+import { changedProjectFiles, createBoardReport, deleteBoard, listSavedBoards, matchesQuery, refreshBoardSources, saveBoard, type SavedBoard } from "./lib/productivity";
 import { MAX_FILES, MAX_FILE_BYTES } from "./lib/scan";
-import type { KnowledgeGraph, NodeKind, SourceFileInput } from "./lib/types";
+import type { EdgeKind, KnowledgeGraph, NodeKind, SourceFileInput } from "./lib/types";
 import "./App.css";
 
 const ALL_KINDS: NodeKind[] = ["file", "function", "class", "note"];
+const ALL_EDGES: EdgeKind[] = ["imports", "contains", "calls", "links"];
 const NO_FILES = "No supported files found. sourcebeta reads JS/TS, Python, Java, Rust, Go, C/C++, and Markdown files.";
 const PATH_FILTER_THRESHOLD = 500;
 const PATH_OPTION_LIMIT = 40;
@@ -45,21 +47,36 @@ export default function App() {
   const [depth, setDepth] = useState(1);
   const [pathTarget, setPathTarget] = useState("");
   const [pathQuery, setPathQuery] = useState("");
+  const [edgeKinds, setEdgeKinds] = useState<Set<EdgeKind>>(new Set(ALL_EDGES));
+  const [showInferred, setShowInferred] = useState(true);
+  const [cyclesOnly, setCyclesOnly] = useState(false);
+  const [impactOnly, setImpactOnly] = useState(false);
+  const [changedFiles, setChangedFiles] = useState<Set<string>>(new Set());
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(PROJECT_QUERY ? "Loading project graph…" : "Loading demo graph…");
   const [projectGraph, setProjectGraph] = useState<KnowledgeGraph | null>(null);
   const [projectName, setProjectName] = useState("");
 
-  const [scene, setScene] = useState<BoardElement[]>([]);
+  const [boards, setBoards] = useState<SavedBoard[]>(() => listSavedBoards());
+  const [scene, setScene] = useState<BoardElement[]>(() => boards[0]?.elements ?? []);
+  const [activeBoardId, setActiveBoardId] = useState<string | null>(() => boards[0]?.id ?? null);
+  const [boardName, setBoardName] = useState(() => boards[0]?.name ?? "Board 1");
   const [fitKey, setFitKey] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const filesRef = useRef<SourceFileInput[]>(DEMO_FILES);
+  const directoryHandle = useRef<ProjectDirectoryHandle | null>(null);
   const graphRequest = useRef(0);
   const analysisWorker = useRef<Worker | null>(null);
   const scanController = useRef<AbortController | null>(null);
 
   const graph = projectGraph ?? analyzedGraph ?? EMPTY_GRAPH;
-  const analytics = useMemo(() => computeAnalytics(graph), [graph]);
+  const viewGraph = useMemo<KnowledgeGraph>(() => ({
+    ...graph,
+    edges: graph.edges.filter((edge) => edgeKinds.has(edge.type) && (showInferred || edge.confidence !== "INFERRED")),
+  }), [graph, edgeKinds, showInferred]);
+  const analytics = useMemo(() => computeAnalytics(viewGraph), [viewGraph]);
+  const affectedIds = useMemo(() => impactOnly && selected.size ? impactSet(viewGraph, selected) : null, [viewGraph, impactOnly, selected]);
   const nodeById = useMemo(() => new Map(graph.nodes.map((node) => [node.id, node])), [graph]);
   const communities = useMemo(
     () => [...new Set(analytics.community.values())].sort((a, b) => a - b),
@@ -72,25 +89,27 @@ export default function App() {
       graph.nodes
         .filter((node) => kinds.has(node.kind))
         .filter((node) => community === "all" || analytics.community.get(node.id) === Number(community))
-        .filter((node) => !needle || node.label.toLowerCase().includes(needle) || node.file.toLowerCase().includes(needle))
+        .filter((node) => !cyclesOnly || analytics.cycle.has(node.id))
+        .filter((node) => !affectedIds || affectedIds.has(node.id))
+        .filter((node) => !needle || matchesQuery(node.label, node.file, needle))
         .map((node) => node.id),
     );
     if (localOnly && selected.size > 0) {
-      const near = neighborhood(graph, selected, depth);
+      const near = neighborhood(viewGraph, selected, depth);
       ids = new Set([...ids].filter((id) => near.has(id)));
     }
     return ids;
-  }, [graph, kinds, community, query, analytics, localOnly, selected, depth]);
+  }, [graph, kinds, community, query, analytics, localOnly, selected, depth, viewGraph, cyclesOnly, affectedIds]);
 
   const activeNode = activeId ? nodeById.get(activeId) : undefined;
   const activeStartLine = activeNode?.startLine ?? activeNode?.line;
   const connections = useMemo(
-    () => activeId ? explainNode(graph, activeId) : [],
-    [graph, activeId],
+    () => activeId ? explainNode(viewGraph, activeId) : [],
+    [viewGraph, activeId],
   );
   const path = useMemo(
-    () => activeId && pathTarget ? shortestPath(graph, activeId, pathTarget) : null,
-    [graph, activeId, pathTarget],
+    () => activeId && pathTarget ? shortestPath(viewGraph, activeId, pathTarget) : null,
+    [viewGraph, activeId, pathTarget],
   );
   const pathCandidates = useMemo(() => {
     if (!activeNode) return { options: [], total: 0 };
@@ -115,7 +134,7 @@ export default function App() {
 
   useEffect(() => {
     if (!PROJECT_QUERY) {
-      loadFiles(DEMO_FILES);
+      loadFiles(DEMO_FILES, "Demo project", true);
       return () => {
         graphRequest.current += 1;
         analysisWorker.current?.terminate();
@@ -145,6 +164,20 @@ export default function App() {
     return () => controller.abort();
   }, []);
 
+  useEffect(() => {
+    if (!scene.length && !activeBoardId) return;
+    const timer = window.setTimeout(() => {
+      try {
+        const id = activeBoardId ?? crypto.randomUUID();
+        if (!activeBoardId) setActiveBoardId(id);
+        setBoards(saveBoard({ id, name: boardName.trim() || "Untitled board", updatedAt: Date.now(), elements: scene }));
+      } catch {
+        setNotice("Board autosave is unavailable because browser storage is full or blocked. Export JSON to keep a backup.");
+      }
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [scene, activeBoardId, boardName]);
+
   const selectNode = (id: string, additive: boolean) => {
     setActiveId(id);
     setSelected((previous) => {
@@ -156,18 +189,27 @@ export default function App() {
     });
   };
 
-  function loadFiles(next: SourceFileInput[]) {
+  function loadFiles(next: SourceFileInput[], name = "", preserveScene = false) {
     cancelWork();
     const request = graphRequest.current;
+    filesRef.current = next;
     setAnalyzedGraph(null);
     setProjectGraph(null);
-    setProjectName("");
+    setProjectName(name);
     setSelected(new Set());
     setActiveId(null);
     setPathTarget("");
     setPathQuery("");
     setQuery("");
     setLocalOnly(false);
+    setImpactOnly(false);
+    setCyclesOnly(false);
+    if (!preserveScene) {
+      setScene([]);
+      setActiveBoardId(null);
+      setBoardName("Board 1");
+      setChangedFiles(new Set());
+    }
     setError("");
     setNotice("");
     setBusy("Analyzing source files…");
@@ -182,8 +224,10 @@ export default function App() {
         if (request === graphRequest.current) {
           if ("error" in event.data) setError(`Could not analyze source files: ${event.data.error}`);
           else {
-            setAnalyzedGraph(event.data.graph);
-            const warning = analysisNotice(event.data.graph);
+            const nextGraph = event.data.graph;
+            setAnalyzedGraph(nextGraph);
+            if (preserveScene) setScene((current) => refreshBoardSources(current, nextGraph));
+            const warning = analysisNotice(nextGraph);
             if (warning) setNotice((previous) => [previous, warning].filter(Boolean).join(" "));
           }
           setBusy("");
@@ -219,13 +263,15 @@ export default function App() {
         inputRef.current?.click();
         return;
       }
-      const scan = await pickProjectFromDirectory(controller.signal);
-      if (!scan || request !== graphRequest.current) return;
+      const handle = await pickProjectDirectory();
+      const scan = await scanProjectDirectory(handle, controller.signal);
+      if (request !== graphRequest.current) return;
       if (scan.files.length === 0) {
         setError(NO_FILES);
         return;
       }
-      loadFiles(scan.files);
+      directoryHandle.current = handle;
+      loadFiles(scan.files, handle.name);
       setNotice(scanNotice(scan));
     } catch (cause) {
       if ((cause as Error).name !== "AbortError" && request === graphRequest.current) setError((cause as Error).message);
@@ -234,10 +280,81 @@ export default function App() {
     }
   };
 
-  const sendToCanvas = () => {
-    if (selected.size === 0) return;
+  const rescanProject = async () => {
+    const handle = directoryHandle.current;
+    if (!handle) return;
+    cancelWork();
+    const request = graphRequest.current;
+    setBusy("Rescanning project…");
+    try {
+      const scan = await scanProjectDirectory(handle);
+      if (request !== graphRequest.current) return;
+      loadFiles(scan.files, handle.name, true);
+      setNotice(`${scanNotice(scan)} Source-linked cards were refreshed.`.trim());
+    } catch (cause) {
+      if (request === graphRequest.current) {
+        setError((cause as Error).message);
+        setBusy("");
+      }
+    }
+  };
+
+  const compareFolder = async () => {
+    try {
+      const handle = await pickProjectDirectory();
+      const baseline = await scanProjectDirectory(handle);
+      const changed = changedProjectFiles(filesRef.current, baseline.files);
+      setChangedFiles(changed);
+      setNotice(`${changed.size} changed file${changed.size === 1 ? "" : "s"} compared with ${handle.name}. Changed nodes have an orange outline.`);
+    } catch (cause) {
+      if ((cause as Error).name !== "AbortError") setError((cause as Error).message);
+    }
+  };
+
+  const shareBoard = () => {
+    const blob = new Blob([createBoardReport(boardName, scene)], { type: "text/html" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${boardName.toLowerCase().replace(/[^a-z0-9]+/g, "-") || "sourcebeta-board"}.html`;
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  const loadBoard = (id: string) => {
+    if (!id) { setActiveBoardId(null); setScene([]); setBoardName("Board 1"); return; }
+    const board = boards.find((item) => item.id === id);
+    if (!board) return;
+    setActiveBoardId(board.id); setBoardName(board.name); setScene(board.elements); setFitKey((value) => value + 1);
+  };
+
+  const saveBoardCopy = () => {
+    const name = window.prompt("Name this board", `${boardName} copy`)?.trim();
+    if (!name) return;
+    const board = { id: crypto.randomUUID(), name, updatedAt: Date.now(), elements: scene };
+    try {
+      setBoards(saveBoard(board)); setActiveBoardId(board.id); setBoardName(name);
+    } catch { setError("Could not save this board. Export JSON instead."); }
+  };
+
+  const removeBoard = () => {
+    if (!activeBoardId || !window.confirm("Delete this saved board?")) return;
+    setBoards(deleteBoard(activeBoardId)); setActiveBoardId(null); setScene([]); setBoardName("Board 1");
+  };
+
+  const changedDiagram = () => {
+    const ids = graph.nodes.filter((node) => changedFiles.has(node.file)).map((node) => node.id);
+    if (!ids.length) return;
     const bounds = sceneBounds(scene);
-    const elements = selectionToElements(graph, selected, scene.length ? bounds.y + bounds.height + 100 : 0);
+    setScene([...scene, ...selectionToElements(viewGraph, ids, scene.length ? bounds.y + bounds.height + 100 : 0)]);
+    setSelected(new Set(ids)); setFitKey((value) => value + 1); setView("canvas");
+  };
+
+  const sendToCanvas = () => {
+    const ids = new Set([...selected].filter((id) => visibleIds.has(id)));
+    if (ids.size === 0) return;
+    const bounds = sceneBounds(scene);
+    const elements = selectionToElements(viewGraph, ids, scene.length ? bounds.y + bounds.height + 100 : 0);
     setScene([...scene, ...elements]);
     setFitKey((value) => value + 1);
     setView("canvas");
@@ -251,7 +368,10 @@ export default function App() {
           <small>{projectName || "code knowledge graph + whiteboard"}</small>
         </div>
         <button onClick={openFolder}>Open folder</button>
-        <button onClick={() => loadFiles(DEMO_FILES)}>Demo project</button>
+        <button onClick={() => { directoryHandle.current = null; loadFiles(DEMO_FILES, "Demo project"); }}>Demo project</button>
+        <button onClick={() => void rescanProject()} disabled={!directoryHandle.current || Boolean(busy)} title="Rescan the current folder and refresh linked cards">Rescan</button>
+        {supportsDirectoryPicker() && <button onClick={() => void compareFolder()} disabled={Boolean(busy)}>Compare folder</button>}
+        {changedFiles.size > 0 && <button onClick={changedDiagram}>Changed-file diagram ({changedFiles.size})</button>}
         {busy && <button onClick={cancelWork}>Cancel</button>}
         <nav className="tabs">
           <button className={view === "graph" ? "tab active" : "tab"} onClick={() => setView("graph")}>Graph</button>
@@ -279,7 +399,9 @@ export default function App() {
               if (request !== graphRequest.current) return;
               if (scan.files.length === 0) setError(NO_FILES);
               else {
-                loadFiles(scan.files);
+                directoryHandle.current = null;
+                const rootName = list[0].webkitRelativePath.split("/")[0] || "Local project";
+                loadFiles(scan.files, rootName);
                 setNotice(scanNotice(scan));
               }
             } catch (cause) {
@@ -299,7 +421,7 @@ export default function App() {
           <aside className="panel controls">
             <label className="field">
               Search
-              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="name or path" />
+              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="fuzzy name or path" />
             </label>
             <div className="field">
               Show
@@ -318,6 +440,21 @@ export default function App() {
                   {kind === "class" ? "classes" : `${kind}s`}
                 </label>
               ))}
+            </div>
+            <div className="field">
+              Edges
+              {ALL_EDGES.map((kind) => (
+                <label className="check" key={kind}>
+                  <input type="checkbox" checked={edgeKinds.has(kind)} onChange={() => {
+                    const next = new Set(edgeKinds);
+                    if (next.has(kind)) next.delete(kind); else next.add(kind);
+                    setEdgeKinds(next);
+                  }} /> {kind}
+                </label>
+              ))}
+              <label className="check"><input type="checkbox" checked={showInferred} onChange={(event) => setShowInferred(event.target.checked)} /> inferred relationships</label>
+              <label className="check"><input type="checkbox" checked={cyclesOnly} onChange={(event) => setCyclesOnly(event.target.checked)} /> cycles only</label>
+              <label className="check"><input type="checkbox" checked={impactOnly} disabled={!selected.size} onChange={(event) => setImpactOnly(event.target.checked)} /> impact of selection</label>
             </div>
             <label className="field">
               Community
@@ -341,7 +478,7 @@ export default function App() {
             )}
             <hr />
             <p className="hint">Click selects · Ctrl/⌘-click multi-selects · drag to move · scroll to zoom</p>
-            <button onClick={() => selected.size > 0 && setSelected(neighborhood(graph, selected, 1))} disabled={selected.size === 0}>
+            <button onClick={() => selected.size > 0 && setSelected(neighborhood(viewGraph, selected, 1))} disabled={selected.size === 0}>
               Select neighbors
             </button>
             <button onClick={() => { setSelected(new Set()); setActiveId(null); }} disabled={selected.size === 0}>
@@ -356,11 +493,13 @@ export default function App() {
           <main className="stage">
             {busy ? <p role="status" className="empty">{busy}</p> : visibleIds.size === 0 ? <p className="empty">No nodes match these filters.</p> : null}
             <GraphView
-              graph={graph}
+              graph={viewGraph}
               analytics={analytics}
               visibleIds={visibleIds}
               selected={selected}
               activeId={activeId}
+              changedFiles={changedFiles}
+              layoutKey={projectName || "default"}
               onSelect={selectNode}
               onBackground={() => setActiveId(null)}
             />
@@ -380,7 +519,7 @@ export default function App() {
                   {analytics.cycle.has(activeNode.id) ? ` · ${analytics.cycle.get(activeNode.id)}-node cycle` : ""}
                   {analytics.godNodes.includes(activeNode.id) ? " · key node" : ""}
                 </p>
-                <button onClick={() => setSelected(neighborhood(graph, [activeNode.id], 1))}>Select neighborhood</button>
+                <button onClick={() => setSelected(neighborhood(viewGraph, [activeNode.id], 1))}>Select neighborhood</button>
                 <SourceView key={activeId} node={activeNode} source={graph.sources?.[activeNode.file]} />
                 <h3>Connections ({connections.length})</h3>
                 <ul className="connections">
@@ -451,9 +590,21 @@ export default function App() {
             <button className="primary" onClick={sendToCanvas} disabled={selected.size === 0}>
               Add {selected.size || ""} selected node{selected.size === 1 ? "" : "s"}
             </button>
-            <span className="hint">Draw, connect and annotate your code architecture.</span>
+            <select aria-label="Saved boards" value={activeBoardId ?? ""} onChange={(event) => loadBoard(event.target.value)}>
+              <option value="">Unsaved board</option>
+              {boards.map((board) => <option key={board.id} value={board.id}>{board.name}</option>)}
+            </select>
+            <input aria-label="Board name" value={boardName} onChange={(event) => setBoardName(event.target.value)} />
+            <button onClick={() => loadBoard("")}>New board</button>
+            <button onClick={saveBoardCopy}>Save as</button>
+            <button onClick={removeBoard} disabled={!activeBoardId}>Delete board</button>
+            <button onClick={shareBoard} disabled={!scene.length}>Share HTML</button>
+            <span className="hint">Autosaved locally · double-click a code card to open its source.</span>
           </div>
-          <CanvasView elements={scene} onChange={setScene} fitKey={fitKey} />
+          <CanvasView elements={scene} onChange={setScene} fitKey={fitKey} onOpenSource={(source) => {
+            if (!nodeById.has(source.nodeId)) { setNotice(`Source unavailable: ${source.file}`); return; }
+            selectNode(source.nodeId, false); setView("graph");
+          }} />
         </div>
       )}
     </div>

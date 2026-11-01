@@ -89,6 +89,11 @@ try {
   assert((await page.locator(".path li").count()) === 3, "shortest path renders three hops");
   await page.screenshot({ path: "artifacts/sourcebeta-graph.png" });
   await page.getByRole("button", { name: "Select neighborhood", exact: true }).click();
+  await page.getByLabel("impact of selection", { exact: true }).check();
+  assert(Number.parseInt(await page.locator(".graph-help").innerText(), 10) < 18, "impact analysis isolates selected dependents");
+  await page.getByLabel("impact of selection", { exact: true }).uncheck();
+  await page.getByRole("button", { name: "Save layout", exact: true }).click();
+  assert(await page.evaluate(() => Object.keys(localStorage).some((key) => key.startsWith("sourcebeta.layout."))), "graph layout saves locally");
   await page.getByRole("button", { name: "Send 6 nodes to canvas", exact: true }).click();
   const surface = page.getByRole("application", { name: "Sourcebeta drawing canvas" });
   await surface.waitFor();
@@ -164,6 +169,16 @@ try {
   await (await pngDownload).saveAs("artifacts/sourcebeta-board.png");
   const png = await readFile("artifacts/sourcebeta-board.png");
   assert(png.subarray(1, 4).toString() === "PNG" && png.length > 1000, "PNG export produces an image");
+  const jsonDownload = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export JSON", exact: true }).click();
+  await (await jsonDownload).saveAs("artifacts/sourcebeta-board.json");
+  const boardJSON = JSON.parse(await readFile("artifacts/sourcebeta-board.json", "utf8"));
+  assert(Array.isArray(boardJSON) && boardJSON.length === await count() && boardJSON.some((element) => element.artwork), "editable JSON export preserves the scene and artwork");
+  const reportDownload = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Share HTML", exact: true }).click();
+  await (await reportDownload).saveAs("artifacts/sourcebeta-board.html");
+  const report = await readFile("artifacts/sourcebeta-board.html", "utf8");
+  assert(report.includes("Read-only Sourcebeta board") && report.includes("Sourcebeta native board"), "share export creates a self-contained interactive report");
 
   const savedCount = await count();
   await page.getByRole("button", { name: "Graph", exact: true }).click();
@@ -174,14 +189,22 @@ try {
   assert(new Set(ids).size === ids.length, "repeated graph handoff creates unique card and connector IDs");
   assert((await page.locator('[data-kind="card"]').count()) === 12, "graph nodes can be added repeatedly without replacing drawings");
   await page.screenshot({ path: "artifacts/sourcebeta-canvas.png" });
+  await page.locator('[data-kind="card"]').first().dblclick();
+  await page.locator(".details h2").waitFor();
+  assert(await page.locator(".details h2").isVisible(), "source-linked cards reopen their graph node");
+  await page.getByRole("button", { name: "Canvas", exact: true }).click();
+  const persistedCount = await count();
 
   await page.getByRole("button", { name: "Graph", exact: true }).click();
   await page.getByLabel("Search", { exact: true }).fill("no-node-matches-this");
   await page.getByText("No nodes match these filters.").waitFor();
   await page.getByLabel("Search", { exact: true }).fill("");
+  await page.waitForTimeout(500);
 
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.getByRole("button", { name: "Canvas", exact: true }).click();
+  assert(await count() === persistedCount, "autosave restores the latest board after reload");
+  await page.getByRole("button", { name: "New board", exact: true }).click();
   const blank = await surface.boundingBox();
   await page.getByRole("button", { name: "Fit board", exact: true }).click();
   assert(!(await page.locator("[data-camera]").getAttribute("transform")).includes("NaN"), "fitting an empty board keeps finite coordinates");
@@ -204,6 +227,18 @@ try {
   assert((await page.locator('[data-kind="arrow"]').innerHTML()) !== manualBefore, "manually drawn connectors stay bound when shapes move");
   await diamond.click({ modifiers: ["Shift"] });
   assert((await page.locator(".board-properties .hint").innerText()).includes("2 selected"), "Shift-click selects multiple objects");
+  await page.getByRole("button", { name: "Group", exact: true }).click();
+  const groupedCircle = await ellipse.boundingBox();
+  const groupedDiamond = await diamond.boundingBox();
+  await gesture({ x: groupedDiamond.x + groupedDiamond.width / 2, y: groupedDiamond.y + groupedDiamond.height / 2 }, { x: groupedDiamond.x + groupedDiamond.width / 2 + 40, y: groupedDiamond.y + groupedDiamond.height / 2 });
+  assert(Math.abs((await ellipse.boundingBox()).x - groupedCircle.x - 40) < 2, "grouped objects move together without cumulative drift");
+  await page.getByRole("button", { name: "Ungroup", exact: true }).click();
+  await surface.focus();
+  await page.keyboard.press("Control+c");
+  await page.keyboard.press("Control+v");
+  assert(await count() === 5, "clipboard paste duplicates selected objects");
+  await page.keyboard.press("Control+z");
+  assert(await count() === 3, "clipboard paste is undoable");
   await surface.focus();
   await page.keyboard.press("Control+a");
   await page.keyboard.press("Delete");

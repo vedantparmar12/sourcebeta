@@ -1,6 +1,6 @@
 import cloudSource from "../../public/libraries/cloud.excalidrawlib?raw";
 import { describe, expect, it } from "vitest";
-import { arrowPoints, elementBounds, readCloudLibrary, sceneBounds, selectionToElements, type BoardElement } from "./canvas";
+import { alignLeft, alignTop, arrowPoints, distributeHorizontally, elementBounds, groupBounds, readCloudLibrary, sceneBounds, selectionToElements, snapToGrid, validateBoardJSON, type BoardElement } from "./canvas";
 import type { KnowledgeGraph } from "./types";
 
 const graph: KnowledgeGraph = {
@@ -95,6 +95,104 @@ describe("Sourcebeta canvas", () => {
     expect(() => readCloudLibrary({})).toThrow();
     expect(() => readCloudLibrary({ library: [null] })).toThrow();
     const [artwork] = readCloudLibrary({ library: [[{ type: "rectangle", width: 20, height: 20, strokeColor: "url(https://example.invalid)" }]] });
-    expect(artwork.elements[0].stroke).toBe("#e9ecf2");
+    expect(artwork.elements[0].stroke).toBe("#343745");
+  });
+
+  it("preserves source metadata on generated cards", () => {
+    const elements = selectionToElements(graph, ["src/a.ts", "note:n.md"]);
+    const cards = elements.filter((e) => e.kind === "card");
+    expect(cards).toHaveLength(2);
+    const fileCard = cards.find((c) => c.source?.nodeId === "src/a.ts");
+    const noteCard = cards.find((c) => c.source?.nodeId === "note:n.md");
+    expect(fileCard?.source).toEqual({ nodeId: "src/a.ts", file: "src/a.ts" });
+    expect(noteCard?.source).toEqual({ nodeId: "note:n.md", file: "n.md" });
+  });
+
+  it("preserves source line when present on graph nodes", () => {
+    const graphWithLine: KnowledgeGraph = {
+      nodes: [{ id: "fn", label: "fn", kind: "function", file: "src/a.ts", line: 42 }],
+      edges: [],
+    };
+    const elements = selectionToElements(graphWithLine, ["fn"]);
+    expect(elements[0].source).toEqual({ nodeId: "fn", file: "src/a.ts", line: 42 });
+  });
+
+  it("aligns elements left and top", () => {
+    const els: BoardElement[] = [
+      { ...box, id: "a", x: 50, y: 30 },
+      { ...box, id: "b", x: 10, y: 80 },
+      { ...box, id: "c", x: 100, y: 10 },
+    ];
+    expect(alignLeft(els).map((e) => e.x)).toEqual([10, 10, 10]);
+    expect(alignTop(els).map((e) => e.y)).toEqual([10, 10, 10]);
+    expect(alignLeft([els[0]]).map((e) => e.x)).toEqual([50]);
+  });
+
+  it("distributes elements horizontally with equal gaps", () => {
+    const els: BoardElement[] = [
+      { ...box, id: "a", x: 0, width: 20 },
+      { ...box, id: "b", x: 100, width: 20 },
+      { ...box, id: "c", x: 300, width: 20 },
+    ];
+    const result = distributeHorizontally(els);
+    expect(result[0].x).toBe(0);
+    expect(result[2].x).toBe(300);
+    const gap1 = result[1].x - (result[0].x + result[0].width);
+    const gap2 = result[2].x - (result[1].x + result[1].width);
+    expect(gap1).toBeCloseTo(gap2);
+  });
+
+  it("snaps values to grid", () => {
+    expect(snapToGrid(25, 24)).toBe(24);
+    expect(snapToGrid(35, 24)).toBe(24);
+    expect(snapToGrid(36, 24)).toBe(48);
+    expect(snapToGrid(0, 24)).toBe(0);
+    expect(snapToGrid(-10, 24)).toBeCloseTo(0);
+  });
+
+  it("computes group bounds", () => {
+    const els: BoardElement[] = [
+      { ...box, id: "a", x: 10, y: 20, width: 50, height: 30 },
+      { ...box, id: "b", x: 100, y: 5, width: 40, height: 60 },
+    ];
+    const bounds = groupBounds(els);
+    expect(bounds).toEqual({ x: 10, y: 5, width: 130, height: 60 });
+    expect(groupBounds([])).toEqual({ x: 0, y: 0, width: 0, height: 0 });
+  });
+
+  it("validates correct board JSON", () => {
+    const data = [{ id: "e1", kind: "rectangle", x: 0, y: 0, width: 100, height: 50, stroke: "#000", fill: "none", strokeWidth: 2 }];
+    const result = validateBoardJSON(data);
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe("e1");
+    expect(result[0].kind).toBe("rectangle");
+  });
+
+  it("validates board JSON with optional fields", () => {
+    const data = [{
+      id: "e1", kind: "card", x: 0, y: 0, width: 100, height: 50,
+      stroke: "#000", fill: "#fff", strokeWidth: 2,
+      text: "hello", fontSize: 16, groupId: "g1", comment: "a note",
+      source: { nodeId: "n1", file: "f.ts", line: 10 },
+    }];
+    const result = validateBoardJSON(data);
+    expect(result[0].text).toBe("hello");
+    expect(result[0].groupId).toBe("g1");
+    expect(result[0].comment).toBe("a note");
+    expect(result[0].source).toEqual({ nodeId: "n1", file: "f.ts", line: 10 });
+  });
+
+  it("round-trips bundled artwork through editable board JSON", () => {
+    const symbol = { ...box, kind: "symbol", artwork: { name: "Cloud", width: 100, height: 60, elements: [{ ...box, id: "child" }] } };
+    expect(validateBoardJSON(JSON.parse(JSON.stringify([symbol])))[0].artwork).toEqual(symbol.artwork);
+  });
+
+  it("rejects invalid board JSON", () => {
+    expect(() => validateBoardJSON("not an array")).toThrow("must be an array");
+    expect(() => validateBoardJSON([{}])).toThrow("missing required field");
+    expect(() => validateBoardJSON([{ id: 123, kind: "rectangle", x: 0, y: 0, width: 10, height: 10, stroke: "#000", fill: "none", strokeWidth: 1 }])).toThrow("id must be a string");
+    expect(() => validateBoardJSON([{ id: "e1", kind: "invalid", x: 0, y: 0, width: 10, height: 10, stroke: "#000", fill: "none", strokeWidth: 1 }])).toThrow("invalid kind");
+    expect(() => validateBoardJSON([{ id: "e1", kind: "rectangle", x: "bad", y: 0, width: 10, height: 10, stroke: "#000", fill: "none", strokeWidth: 1 }])).toThrow("must be a finite number");
+    expect(() => validateBoardJSON([{ id: "e1", kind: "rectangle", x: 0, y: 0, width: 10, height: 10, stroke: "url(evil)", fill: "none", strokeWidth: 1 }])).toThrow("must be a valid color");
   });
 });
