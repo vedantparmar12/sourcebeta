@@ -14,16 +14,32 @@ interface GraphViewProps {
   visibleIds: Set<string>;
   selected: Set<string>;
   activeId: string | null;
+  changedFiles?: Set<string>;
+  layoutKey?: string;
   onSelect: (id: string, additive: boolean) => void;
   onBackground: () => void;
 }
 
-export function GraphView({ graph, analytics, visibleIds, selected, activeId, onSelect, onBackground }: GraphViewProps) {
+export function GraphView({ graph, analytics, visibleIds, selected, activeId, changedFiles, layoutKey = "default", onSelect, onBackground }: GraphViewProps) {
   const container = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
-  const layout = useMemo(() => createLayout(graph, analytics), [graph, analytics]);
+  const layout = useMemo(() => {
+    const next = createLayout(graph, analytics);
+    try {
+      const saved: unknown = JSON.parse(localStorage.getItem(`sourcebeta.layout.${layoutKey}`) ?? "null");
+      if (saved && typeof saved === "object") {
+        for (const node of next.nodes) {
+          const position = (saved as Record<string, { x?: unknown; y?: unknown }>)[node.id];
+          if (typeof position?.x === "number" && Number.isFinite(position.x) && typeof position.y === "number" && Number.isFinite(position.y)) {
+            node.x = position.x; node.y = position.y; node.fixed = true;
+          }
+        }
+      }
+    } catch { /* Ignore unavailable or malformed saved layouts. */ }
+    return next;
+  }, [graph, analytics, layoutKey]);
   const latest = useRef({ visibleIds, selected, activeId, onSelect, onBackground });
-  const controls = useRef<{ fit: () => void; zoom: (factor: number) => void; redraw: () => void } | null>(null);
+  const controls = useRef<{ fit: () => void; zoom: (factor: number) => void; redraw: () => void; save: () => void } | null>(null);
   const [zoom, setZoom] = useState(1);
   const [tooltip, setTooltip] = useState<{ node: LayoutNode; x: number; y: number } | null>(null);
 
@@ -118,6 +134,13 @@ export function GraphView({ graph, analytics, visibleIds, selected, activeId, on
           context.lineWidth = 2 / camera.scale;
           context.stroke();
         }
+        if (changedFiles?.has(node.file)) {
+          context.beginPath();
+          context.arc(node.x, node.y, node.radius + 4 / camera.scale, 0, Math.PI * 2);
+          context.strokeStyle = "#ffb020";
+          context.lineWidth = 2 / camera.scale;
+          context.stroke();
+        }
         if (prominent || analytics.godNodes.includes(node.id) || (camera.scale > 1.1 && labels < 160)) {
           const text = node.label.length > 70 ? `${node.label.slice(0, 67)}…` : node.label;
           context.font = `${12 / camera.scale}px "Segoe UI", sans-serif`;
@@ -151,7 +174,13 @@ export function GraphView({ graph, analytics, visibleIds, selected, activeId, on
       setZoom(scale);
       schedule();
     };
-    controls.current = { fit: () => { autoFit = false; fit(); schedule(); }, zoom: (factor) => zoomAt(factor, width / 2, height / 2), redraw: schedule };
+    const save = () => {
+      try {
+        const positions = Object.fromEntries(layout.nodes.map((node) => [node.id, { x: node.x, y: node.y }]));
+        localStorage.setItem(`sourcebeta.layout.${layoutKey}`, JSON.stringify(positions));
+      } catch { /* Layout saving is optional when storage is unavailable. */ }
+    };
+    controls.current = { fit: () => { autoFit = false; fit(); schedule(); }, zoom: (factor) => zoomAt(factor, width / 2, height / 2), redraw: schedule, save };
     const observer = new ResizeObserver(([entry]) => {
       const nextWidth = entry.contentRect.width;
       const nextHeight = entry.contentRect.height;
@@ -281,7 +310,7 @@ export function GraphView({ graph, analytics, visibleIds, selected, activeId, on
       element.removeEventListener("pointerleave", leave);
       element.removeEventListener("keydown", key);
     };
-  }, [layout, analytics]);
+  }, [layout, analytics, layoutKey, changedFiles]);
 
   return <div className="graph-view" ref={container}>
     <canvas ref={canvas} aria-label="Sourcebeta code graph" aria-describedby="graph-help" role="application" tabIndex={0}>
@@ -292,6 +321,7 @@ export function GraphView({ graph, analytics, visibleIds, selected, activeId, on
       <output aria-label="Graph zoom">{Math.round(zoom * 100)}%</output>
       <button aria-label="Zoom in graph" onClick={() => controls.current?.zoom(1.25)}>+</button>
       <button onClick={() => controls.current?.fit()}>Fit graph</button>
+      <button onClick={() => controls.current?.save()} title="Save node positions in this browser">Save layout</button>
     </div>
     <p id="graph-help" className="graph-help">{visibleIds.size} visible nodes · arrows select nodes · Shift+arrows pan · F to fit</p>
     {tooltip && <div role="tooltip" className="graph-tooltip" style={{ left: tooltip.x, top: tooltip.y }}><strong>{tooltip.node.label}</strong><span>{tooltip.node.kind} · {tooltip.node.file}{tooltip.node.line ? `:${tooltip.node.line}` : ""}</span></div>}

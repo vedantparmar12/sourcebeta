@@ -219,6 +219,30 @@ export function neighborhood(graph: KnowledgeGraph, ids: Iterable<string>, depth
   return selected;
 }
 
+export function impactSet(graph: KnowledgeGraph, ids: Iterable<string>): Set<string> {
+  const affected = new Set(ids);
+  const dependents = new Map<string, string[]>();
+  for (const edge of graph.edges) {
+    if (edge.type === "contains") continue;
+    const sources = dependents.get(edge.target) ?? [];
+    sources.push(edge.source);
+    dependents.set(edge.target, sources);
+  }
+  let frontier = [...affected];
+  while (frontier.length) {
+    const next: string[] = [];
+    for (const id of frontier) {
+      for (const dependent of dependents.get(id) ?? []) {
+        if (affected.has(dependent)) continue;
+        affected.add(dependent);
+        next.push(dependent);
+      }
+    }
+    frontier = next;
+  }
+  return affected;
+}
+
 export function shortestPath(graph: KnowledgeGraph, from: string, to: string): string[] | null {
   if (from === to) return [from];
   const index = graphIndex(graph);

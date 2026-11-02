@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { analyzeProject } from "./analyzer";
-import { computeAnalytics, explainNode, neighborhood, shortestPath } from "./analytics";
+import { computeAnalytics, explainNode, impactSet, neighborhood, shortestPath } from "./analytics";
 import { DEMO_FILES } from "./demo";
 import type { KnowledgeGraph } from "./types";
 
@@ -90,6 +90,12 @@ describe("analytics", () => {
     expect([...neighborhood(chain, ["b"], 1)].sort()).toEqual(["a", "b", "c"]);
     expect([...neighborhood(chain, ["a"], 1)].sort()).toEqual(["a", "b"]);
     expect([...neighborhood(chain, ["a"], 2)].sort()).toEqual(["a", "b", "c"]);
+  });
+
+  it("finds direct and transitive dependents for impact analysis", () => {
+    expect([...impactSet(chain, ["c"])].sort()).toEqual(["a", "b", "c"]);
+    expect([...impactSet(chain, ["b"])].sort()).toEqual(["a", "b"]);
+    expect([...impactSet(chain, ["a"])].sort()).toEqual(["a"]);
   });
 
   it("finds shortest paths and reports disconnected nodes", () => {
